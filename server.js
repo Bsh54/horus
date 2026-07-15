@@ -228,6 +228,26 @@ function liveContextFor(id) {
   return parts.join("\n");
 }
 
+const PAGE_SIZE = 15;
+async function sendMatchesPage(bot, chatId, rows, page = 0) {
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  page = Math.min(Math.max(0, page), pages - 1);
+  const slice = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
+  const kb = slice.map((r) => {
+    const cup = /world cup/i.test(r.meta.competition || "") ? "🏆 " : "";
+    const when = r.meta.startTime ? ` · ${new Date(r.meta.startTime).toISOString().slice(5, 10)}` : "";
+    return [{ text: `${cup}${r.meta.home} 🆚 ${r.meta.away}${when}`, callback_data: `pick:${r.id}` }];
+  });
+  const nav = [];
+  if (page > 0) nav.push({ text: "⬅️ Newer", callback_data: `pg:${page - 1}` });
+  nav.push({ text: `${page + 1}/${pages}`, callback_data: "noop" });
+  if (page < pages - 1) nav.push({ text: "Older ➡️", callback_data: `pg:${page + 1}` });
+  kb.push(nav);
+  await bot.sendText(chatId, `⚽ <b>Matches on HORUS TV</b> — ${rows.length} matches ready to watch. Tap one! 🔴`, {
+    reply_markup: { inline_keyboard: kb },
+  });
+}
+
 async function sendSpeedChoice(bot, chatId, id) {
   await bot.sendText(chatId, `🔴 <b>${matchLabel(id)}</b> — we're going in! 🎉\n\nHow do you want to watch it?`, {
     reply_markup: { inline_keyboard: [[
@@ -244,16 +264,8 @@ async function botCommand({ chatId, text, from, bot }) {
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(" ");
   const listMatches = () => {
-    // replay library: every World Cup match with an archive, newest first
-    const rows = catalog
-      .filter((c) => /world cup/i.test(c.competition) && hasArchive(c.id))
-      .slice(0, 40)
-      .map((c) => ({ id: c.id, meta: c }));
-    // plus whatever is currently on the live feed and not already listed
-    const listed = new Set(rows.map((r) => r.id));
-    for (const id of (live ? live.allFixtureIds() : [])) {
-      if (!listed.has(id) && live.metaFor(id)) rows.unshift({ id, meta: live.metaFor(id) });
-    }
+    // every catalogued match that has a watchable archive, newest first
+    const rows = catalog.filter((c) => hasArchive(c.id)).map((c) => ({ id: c.id, meta: c }));
     chatLists.set(String(chatId), rows.map((r) => r.id));
     return rows;
   };
@@ -265,13 +277,7 @@ async function botCommand({ chatId, text, from, bot }) {
     case "/matches": {
       const rows = listMatches();
       if (!rows.length) { await bot.sendText(chatId, "Hmm, the schedule is loading — give me a minute and try again! 🙏"); break; }
-      // tap-to-watch: one button per match, no numbers to type
-      const top = rows.slice(0, 12);
-      await bot.sendText(chatId, "⚽ <b>Matches on HORUS TV — tap one and we watch it together!</b> 🔴", {
-        reply_markup: { inline_keyboard: top.map((r) => ([{
-          text: `${r.meta.home} 🆚 ${r.meta.away}`, callback_data: `pick:${r.id}`,
-        }])) },
-      });
+      await sendMatchesPage(bot, chatId, rows, parseInt(arg, 10) || 0);
       break;
     }
     case "/follow": {
@@ -328,6 +334,12 @@ async function botCommand({ chatId, text, from, bot }) {
         await sendSpeedChoice(bot, chatId, Number(text.split(":")[1]));
         break;
       }
+      if (text.startsWith("pg:")) { // pagination in the match list
+        const rows = catalog.filter((c) => hasArchive(c.id)).map((c) => ({ id: c.id, meta: c }));
+        await sendMatchesPage(bot, chatId, rows, Number(text.split(":")[1]));
+        break;
+      }
+      if (text === "noop") break;
       if (text.startsWith("rl:")) { // pace chosen from the inline keyboard
         const [, fid, sec] = text.split(":");
         horus.stopReplay(chatId);
