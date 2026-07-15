@@ -319,9 +319,9 @@ function allOfferedFixtures() {
 }
 
 const PHASE_UI = {
-  live: { icon: "🔴", title: "LIVE NOW" },
-  upcoming: { icon: "🕒", title: "UPCOMING" },
-  finished: { icon: "🏁", title: "FINISHED" },
+  live: { icon: "🔴", title: "Live now" },
+  upcoming: { icon: "", title: "Upcoming" },
+  finished: { icon: "", title: "Finished" },
 };
 
 async function sendPhaseChooser(bot, chatId) {
@@ -329,7 +329,7 @@ async function sendPhaseChooser(bot, chatId) {
   for (const id of allOfferedFixtures()) counts[phaseOfFixture(id)]++;
   const lang = users.langOf(chatId);
   const [tLive, tUp, tFin] = await Promise.all([i18n.t("live_now", lang), i18n.t("upcoming", lang), i18n.t("finished", lang)]);
-  await bot.sendText(chatId, `⚽ <b>${await i18n.t("matches_menu", lang)}</b>`, {
+  await bot.sendText(chatId, `<b>${await i18n.t("matches_menu", lang)}</b>`, {
     reply_markup: { inline_keyboard: [
       [{ text: `${tLive} (${counts.live})`, callback_data: "phase:live" }],
       [{ text: `${tUp} (${counts.upcoming})`, callback_data: "phase:upcoming" }],
@@ -348,10 +348,10 @@ function rowLabel(id, phase) {
   }
   if (phase === "upcoming") {
     const when = meta.startTime ? new Date(meta.startTime).toISOString().slice(11, 16) + " UTC" : "";
-    return `🕒 ${meta.home} 🆚 ${meta.away} · ${when}`;
+    return `${meta.home} – ${meta.away} · ${when}`;
   }
-  const sc = st?.score ? ` ${st.score[0]}-${st.score[1]}` : "";
-  return `🏁 ${meta.home}${sc} ${meta.away}`;
+  const sc = st?.score ? ` ${st.score[0]}-${st.score[1]} ` : " – ";
+  return `${meta.home}${sc}${meta.away}`;
 }
 
 async function sendMatchesPage(bot, chatId, phase, page = 0, editMsgId = null) {
@@ -376,19 +376,20 @@ async function sendMatchesPage(bot, chatId, phase, page = 0, editMsgId = null) {
   if (page < pages - 1) nav.push({ text: "➡️", callback_data: `pg:${phase}:${page + 1}` });
   kb.push(nav);
   const ui = PHASE_UI[phase];
-  const text = `${ui.icon} <b>${ui.title}</b> — ${ids.length} matches`;
+  const text = `${ui.icon ? ui.icon + " " : ""}<b>${ui.title}</b> · ${ids.length}`;
   const extra = { reply_markup: { inline_keyboard: kb } };
   if (editMsgId) await bot.editText(chatId, editMsgId, text, extra); // paging edits in place
   else await bot.sendText(chatId, text, extra);
 }
 
+// Replay speed is a time multiplier over the real match clock.
 async function sendSpeedChoice(bot, chatId, id) {
-  await bot.sendText(chatId, `<b>${matchLabel(id)}</b>\nPick your pace:`, {
+  const lang = users.langOf(chatId);
+  await bot.sendText(chatId, `<b>${matchLabel(id)}</b>\n${await i18n.translate("Playback speed:", lang)}`, {
     reply_markup: { inline_keyboard: [[
-      { text: "⚡ Quick (2 min)", callback_data: `rl:${id}:120` },
-      { text: "🎬 Standard (5 min)", callback_data: `rl:${id}:300` },
-    ], [
-      { text: "🍿 Extended (10 min)", callback_data: `rl:${id}:600` },
+      { text: "x2", callback_data: `rl:${id}:2` },
+      { text: "x5", callback_data: `rl:${id}:5` },
+      { text: await i18n.translate("Normal", lang), callback_data: `rl:${id}:1` },
     ]] },
   });
 }
@@ -406,8 +407,8 @@ async function sendPlanPortal(bot, chatId) {
   ]);
   await bot.sendText(chatId, `<b>${title}</b>\n\n${free}\n\n${premium}`, {
     reply_markup: { inline_keyboard: [[
-      { text: "🆓 FREE", callback_data: "plan:free" },
-      { text: "⭐ PREMIUM — 0.1 SOL", callback_data: "plan:premium" },
+      { text: "Free", callback_data: "plan:free" },
+      { text: "Premium — 0.1 SOL", callback_data: "plan:premium" },
     ]] },
   });
 }
@@ -440,7 +441,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       await botCommand({ chatId, text: "/start", from, bot });
     } else if (plan === "premium") {
       if (!bank) { await sendT(bot, chatId, "The bank is offline right now — try again in a moment."); return; }
-      await sendT(bot, chatId, "⏳ Processing your 0.1 SOL payment on Solana devnet…");
+      await sendT(bot, chatId, "Processing your 0.1 SOL payment on Solana devnet…");
       try {
         const sig = await bank.pay(chatId, users.PREMIUM_SOL, "premium");
         users.setPlan(chatId, "premium", sig);
@@ -457,7 +458,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
 
   // first contact: language first, everything else flows from it
   if (!user.lang && !text.startsWith("/language")) {
-    await bot.sendText(chatId, `𓂀 <b>${i18n.STRINGS.welcome}</b>\n\n${i18n.STRINGS.pick_language}`, { reply_markup: i18n.languageKeyboard(0) });
+    await bot.sendText(chatId, `<b>${i18n.STRINGS.welcome}</b>\n\n${i18n.STRINGS.pick_language}`, { reply_markup: i18n.languageKeyboard(0) });
     return;
   }
   if (user.lang && !user.plan && !isCallback && text.startsWith("/") && !text.startsWith("/language")) {
@@ -473,7 +474,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
   switch ((cmd || "").toLowerCase()) {
     case "/start":
       await sendT(bot, chatId,
-        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, follow my commentary — and if you fancy it, take on the market with real on-chain SOL stakes (devnet).\n\n⚽ /matches — pick a match to watch\n👛 /wallet — your balance and bets\n⭐ /plan — your plan (${users.isPremium(chatId) ? "PREMIUM" : "FREE"})\n🌍 /language — change language\n⏹ /stopreplay — leave the current match`);
+        `<b>${name}, I'm HORUS.</b>\nLive World Cup coverage with the betting market's read, right here.\n\n/matches — pick a match\n/wallet — balance and bets\n/plan — ${users.isPremium(chatId) ? "Premium" : "Free"} plan\n/language — change language\n\n<i>/stopreplay leaves the current match</i>`);
       break;
     case "/ask": {
       if (!arg) { await sendT(bot, chatId, "Ask me anything about the live matches: /ask who is winning?"); break; }
@@ -493,7 +494,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       const answer = await horus.ask(arg, lines.slice(0, 20).join("\n"), lang, i18n.llmSpeaks(lang));
       if (answer) {
         const left = quota.left === Infinity ? "" : `\n\n<i>${quota.left}/${users.FREE_AI_PER_DAY}</i>`;
-        await bot.sendText(chatId, `𓂀 ${answer}${left}`);
+        await bot.sendText(chatId, `${answer}${left}`);
       } else await sendT(bot, chatId, "My analysis engine is busy — try again in a moment.");
       break;
     }
@@ -503,14 +504,14 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       const id = rows[parseInt(arg, 10) - 1];
       const st = id ? scoreStates.get(Number(id)) : null;
       if (!id || !st?.seq) { await sendT(bot, chatId, "Do /matches first, then /verify N — I'll prove that match's stats on-chain."); break; }
-      await sendT(bot, chatId, "🔏 Fetching the Merkle proof from TxLINE…");
+      await sendT(bot, chatId, "Fetching the Merkle proof from TxLINE…");
       try {
         const v = await verifySummary(Number(id), st.seq);
         const meta = metaOf(id) || { home: "Home", away: "Away" };
         const ok = v.parts.filter((p) => !p.error);
         const lines = ok.map((p) => `• ${p.name}: <b>${JSON.stringify(p.value)}</b> — ${p.proofNodes} proof nodes`);
         await bot.sendText(chatId,
-          `🔏 <b>${meta.home} ${st.score?.[0] ?? ""}-${st.score?.[1] ?? ""} ${meta.away}</b> — ${await i18n.t("verified_onchain", users.langOf(chatId))}\n\n` +
+          `<b>${meta.home} ${st.score?.[0] ?? ""}-${st.score?.[1] ?? ""} ${meta.away}</b> — ${await i18n.t("verified_onchain", users.langOf(chatId))}\n\n` +
           `${lines.join("\n")}\n\n` +
           `Merkle root: <code>${(v.root || "").slice(0, 16)}…${(v.root || "").slice(-8)}</code>\n` +
           `seq ${v.seq} · TxLINE program <code>6pW64gN1s...yP2J</code> (Solana devnet)\n` +
@@ -536,12 +537,12 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       const id = rows[parseInt(arg, 10) - 1];
       if (!id) { await bot.sendText(chatId, "Do /matches first, then /follow N (the number in the list)."); break; }
       bot.subscribe(chatId, id, name);
-      await bot.sendText(chatId, `🔔 Following <b>${matchLabel(id)}</b>. You'll get goals, cards and significant market moves as they happen.`);
+      await bot.sendText(chatId, `<b>Following ${matchLabel(id)}.</b>\nGoals, cards and significant market moves as they happen.`);
       break;
     }
     case "/followall":
       bot.subscribe(chatId, "all", name);
-      await bot.sendText(chatId, "🔔 Following every match on the feed. You'll be notified when something matters.");
+      await bot.sendText(chatId, "<b>Following every match on the feed.</b>\nYou'll be notified when something matters.");
       break;
     case "/unfollow":
       bot.unsubscribe(chatId);
@@ -576,7 +577,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         const lines = mine.slice(-5).map((b) =>
           `${b.settled ? (b.won ? "✅" : "❌") : "⏳"} ${b.sideName} @ ${b.odds} — ${b.stake} SOL${b.won && b.payout ? ` → ${b.payout} SOL` : ""}`);
         await bot.sendText(chatId,
-          `👛 <b>Your wallet</b> (Solana devnet)\n<code>${w.pub}</code>\nBalance: <b>${w.sol.toFixed(4)} SOL</b>${lines.length ? "\n\n<b>Bets</b>\n" + lines.join("\n") : "\n\nNo bets yet — pick a match and take on the market."}`);
+          `<b>Your wallet</b> (Solana devnet)\n<code>${w.pub}</code>\nBalance: <b>${w.sol.toFixed(4)} SOL</b>${lines.length ? "\n\n<b>Bets</b>\n" + lines.join("\n") : "\n\nNo bets yet — pick a match and take on the market."}`);
       } catch (e) { console.log("[bank] wallet failed:", e.message); await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment."); }
       break;
     }
@@ -598,18 +599,18 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         if (realPhase === "finished" && hasArchive(id)) { await sendSpeedChoice(bot, chatId, id); break; }
         bot.subscribe(chatId, id, name);
         if (realPhase === "live") {
-          await sendT(bot, chatId, `🔔 Following <b>${matchLabel(id)}</b> — goals, cards and market moves as they happen.`);
+          await sendT(bot, chatId, `<b>Following ${matchLabel(id)}.</b>\nGoals, cards and market moves as they happen.`);
           await bot.sendText(chatId, liveContextFor(Number(id)));
         } else if (realPhase === "upcoming") {
           const meta = metaOf(id) || {};
           const odds = live ? live.oddsFor(Number(id)) : null;
           const when = meta.startTime ? new Date(meta.startTime).toISOString().slice(11, 16) + " UTC" : "soon";
           await sendT(bot, chatId,
-            `🔔 Following <b>${matchLabel(id)}</b> — kick-off ${when}.` +
-            (odds ? `\nPre-match odds: ${odds.home} / ${odds.draw} / ${odds.away}` : "") +
-            `\nI'll ping you the moment it starts.`);
+            `<b>Following ${matchLabel(id)}.</b>\nKick-off ${when}.` +
+            (odds ? ` Market: ${odds.home} · ${odds.draw} · ${odds.away}` : "") +
+            `\n<i>You'll hear from me the moment it starts.</i>`);
         } else {
-          await sendT(bot, chatId, `🔔 Following <b>${matchLabel(id)}</b>.`);
+          await sendT(bot, chatId, `<b>Following ${matchLabel(id)}.</b>`);
         }
         break;
       }
@@ -624,7 +625,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
           const odds = horus.preMatchOdds(Number(fid));
           if (odds && !bank.hasOpenBet(chatId, fid)) {
             await bot.sendText(chatId,
-              `🎲 <b>Take on the market?</b> Pre-match odds, straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet) — settled on-chain at the final whistle.`,
+              `<b>Take on the market?</b> Pre-match odds, straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet) — settled on-chain at the final whistle.`,
               { reply_markup: { inline_keyboard: [[
                 { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${fid}:0` },
                 { text: `Draw @ ${odds.draw}`, callback_data: `bet:${fid}:1` },
@@ -649,11 +650,11 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         if (!odds) { await bot.sendText(chatId, "No odds available for this match."); break; }
         const sideName = [meta.home, "Draw", meta.away][+side];
         const taken = [odds.home, odds.draw, odds.away][+side];
-        await bot.sendText(chatId, "⏳ Placing your stake on-chain…");
+        await bot.sendText(chatId, "Placing your stake on-chain…");
         try {
           const betRec = await bank.placeBet(chatId, fid, +side, sideName, taken);
           await bot.sendText(chatId,
-            `🎟 <b>Position taken: ${sideName} @ ${taken}</b>\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\nSettlement lands in your wallet at the final whistle. /wallet to check it.`);
+            `<b>Position taken: ${sideName} @ ${taken}</b>\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\nSettlement lands in your wallet at the final whistle. /wallet to check it.`);
         } catch (e) {
           console.log("[bank] bet failed:", e.message);
           await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment.");

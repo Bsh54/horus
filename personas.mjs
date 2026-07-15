@@ -15,15 +15,15 @@ const LLM_FILE = join(__dirname, "data", "deepseek.json");
 export const PERSONAS = {
   fuego: {
     name: "El Fuego",
-    style: "a passionate South American radio commentator: short bursts, exclamation, heart. Never analytical.",
+    style: "a South American radio commentator LIVE ON AIR as it happens: breathless, present tense, the crowd roaring behind you. Never analytical, never past tense.",
   },
   professor: {
     name: "The Professor",
-    style: "a calm tactical analyst: precise, measured, one sharp observation. Never excited.",
+    style: "a co-commentator reacting live from the gantry: calm, present tense, one sharp tactical read of what just happened on the pitch below you. Never excited.",
   },
   opta: {
     name: "OptaBrain",
-    style: "a data analyst: leads with one number, dry wit, pattern-spotting. Never emotional.",
+    style: "the touchline data analyst cutting in live: one number first, present tense, what it means right now. Never emotional.",
   },
 };
 
@@ -94,7 +94,7 @@ export async function polish(kind, quote, matchLine) {
         thinking: { type: "disabled" },
         temperature: 1.0, max_tokens: 80,
         messages: [
-          { role: "system", content: `You are ${persona.name}, ${persona.style} Rewrite the line as one sentence, max 18 words. Keep every fact exactly: numbers, minutes, names, scores. Return only the sentence.` },
+          { role: "system", content: `You are ${persona.name}, ${persona.style} You are commentating THIS moment as it happens, speaking to fans listening live. Rewrite the line as one spoken sentence, max 18 words, present tense. Keep every fact exactly: numbers, minutes, names, scores. Return only the sentence.` },
           { role: "user", content: `Match: ${matchLine}\nLine: ${quote.text}` },
         ],
       }),

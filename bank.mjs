@@ -104,13 +104,13 @@ export function createBank({ journal = () => {} } = {}) {
             b.payoutSig = await transfer(house, punterKp(b.chatId).publicKey, payout);
             b.payout = payout;
             await notify(b.chatId,
-              `💰 <b>You beat the market.</b> ${b.sideName} @ ${b.odds} — ${b.stake} SOL returns <b>${payout} SOL</b>, paid on-chain.\n<a href="${EXPLORER(b.payoutSig)}">View payout on Solana Explorer</a>`);
+              `<b>You beat the market.</b>\n${b.sideName} @ ${b.odds} — ${b.stake} SOL returns <b>${payout} SOL</b>, paid on-chain.\n<a href="${EXPLORER(b.payoutSig)}">View payout on Solana Explorer</a>`);
           } catch (e) {
             b.payoutError = e.message;
             await notify(b.chatId, `You won ${b.sideName} @ ${b.odds}, payout pending — the bank will retry.`);
           }
         } else {
-          await notify(b.chatId, `📉 Settled: ${b.sideName} @ ${b.odds} didn't come in. The market keeps your ${b.stake} SOL this time.`);
+          await notify(b.chatId, `<b>Settled.</b>\n${b.sideName} @ ${b.odds} didn't come in — the market keeps your ${b.stake} SOL this time.`);
         }
         journal({ kind: "bet-settled", id: b.id, won: b.won, payout: b.payout || 0 });
       }

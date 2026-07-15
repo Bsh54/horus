@@ -398,16 +398,19 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   }
 
   const reliveRuns = new Map(); // chatId -> abort flag
-  // durationSec: how long the fan wants the whole match to take
-  async function relive(chatId, fixtureId, meta, durationSec = 300, events = []) {
+  // speed: time multiplier over the real match clock (1 = real time, 2, 5)
+  async function relive(chatId, fixtureId, meta, speed = 5, events = []) {
+    speed = Math.max(1, Number(speed) || 5);
     const ticks = loadTicksFor(fixtureId);
     if (!ticks || !ticks.length) { await bot.sendText(chatId, "No coverage available for that match — /matches for the rest."); return; }
     const pbp = loadPbp(fixtureId);
     const usedPbp = !!(pbp && pbp.plays && pbp.plays.length);
+    // message budget follows speed: faster replay, tighter selection
+    const durationSec = Math.round(95 * 60 / speed);
     let moments;
     if (usedPbp) {
       // full play-by-play available: broadcast the real match flow
-      moments = pbpTimeline(pbp, meta, durationSec, ticks);
+      moments = pbpTimeline(pbp, meta, Math.min(durationSec, 900), ticks);
     } else {
       moments = buildTimeline(ticks, meta);
       const evMoments = eventMoments(events, meta);
@@ -418,18 +421,18 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       }
     }
     if (!moments.length) { await bot.sendText(chatId, "No market story available for that match — /matches for another."); return; }
-    const span = Math.max(1, moments[moments.length - 1].ts - moments[0].ts);
-    const factor = span / (durationSec * 1000); // real ms per replay ms
+    const factor = speed; // real ms per replay ms — the match clock, multiplied
     reliveRuns.set(String(chatId), { stop: false });
-    await bot.sendText(chatId,
-      `🔴 <b>${meta.home} vs ${meta.away}</b> — coverage starting.\nI'll bring you the match and what the market makes of it. <i>(/stopreplay to leave)</i>`);
+    await bot.sendText(chatId, await translate(
+      `<b>${meta.home} vs ${meta.away}</b> — kick-off${speed > 1 ? ` (x${speed})` : ""}.\n<i>/stopreplay to leave</i>`, langOf(chatId)));
     // one LLM pass turns the deterministic lines into live commentary;
     // any failure keeps the deterministic broadcast untouched
     const lively = await llmRewrite(meta, moments);
     if (lively) moments = lively;
     let prevTs = moments[0].ts;
     for (const m of moments) {
-      const wait = Math.min(60000, Math.max(800, (m.ts - prevTs) / factor));
+      // cap quiet spells so half-time never freezes the chat for 15 minutes
+      const wait = Math.min(90000, Math.max(800, (m.ts - prevTs) / factor));
       await new Promise((r) => setTimeout(r, wait));
       if (reliveRuns.get(String(chatId))?.stop) { reliveRuns.delete(String(chatId)); return; }
       prevTs = m.ts;

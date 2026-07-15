@@ -115,10 +115,12 @@ export function buildEventJob(ev, ctx) {
     home: { name: meta.home }, away: { name: meta.away },
     score, minute, live: true,
   };
-  const probLine = probs && prevProbs
-    ? `${pct(ev.isHome ? prevProbs.home : prevProbs.away)} → ${pct(ev.isHome ? probs.home : probs.away)}`
-    : probs ? pct(ev.isHome ? probs.home : probs.away) : "—";
-  const oddsSide = odds ? (ev.isHome ? odds.home : odds.away) : null;
+  // A stat box with no data must not exist — build them conditionally.
+  const side = (o) => (ev.isHome ? o.home : o.away);
+  const probLine = probs && prevProbs ? `${pct(side(prevProbs))} → ${pct(side(probs))}`
+    : probs ? pct(side(probs)) : null;
+  const probBox = probLine ? [[texts.win_probability || "Win probability", probLine, "gold"]] : [];
+  const oddsSide = odds && Number.isFinite(side(odds)) ? side(odds) : null;
 
   switch (ev.kind) {
     case "goal": return {
@@ -126,7 +128,7 @@ export function buildEventJob(ev, ctx) {
       hlHome: !!ev.isHome, hlAway: !ev.isHome,
       player: ev.player || { name: ev.isHome ? meta.home : meta.away, halo: true },
       stats: [
-        [texts.win_probability || "Win probability", probLine, "gold"],
+        ...probBox,
         ...(oddsSide ? [[`${texts.live_odds || "Live odds"}`, String(oddsSide), "green"]] : []),
       ],
       quote: ev.quote,
@@ -137,7 +139,7 @@ export function buildEventJob(ev, ctx) {
       redCardIcon: true,
       stats: [
         [texts.men_on_pitch || "Men on pitch", ev.isHome ? "10 v 11" : "11 v 10", "red"],
-        [texts.win_probability || "Win probability", probLine, "gold"],
+        ...probBox,
       ],
       quote: ev.quote,
     };
@@ -186,8 +188,8 @@ export function buildEventJob(ev, ctx) {
       ...common, kind: "big", badge: texts.odds_moved || "MARKET ALERT", badgeColor: "violet", badgeFg: "fg",
       sub: "SHARP MONEY", player: null,
       stats: [
-        [texts.win_probability || "Win probability", probLine, "violet"],
-        ...(odds ? [[texts.consensus || "Consensus 1X2", `${odds.home} / ${odds.draw} / ${odds.away}`, "violet"]] : []),
+        ...(probLine ? [[texts.win_probability || "Win probability", probLine, "violet"]] : []),
+        ...(odds ? [["1X2", `${odds.home}·${odds.draw}·${odds.away}`, "violet"]] : []),
       ],
       quote: ev.quote,
     };

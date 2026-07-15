@@ -147,6 +147,13 @@ def score_row(img, d, y, job, logo=44):
     d.line([(cx - 20, y + 22), (cx + 20, y + 22)], fill=MUTED_FG, width=5)
     d.text((cx + 44, y - 18), ast, fill=gold if job.get("hlAway") else FG, font=F_SCORE)
 
+def fit_font(d, text, max_w, sizes=(32, 26, 22, 18, 15)):
+    """Largest mono size whose rendering fits max_w — values never overflow."""
+    for s in sizes:
+        f = mono(s)
+        if text_w(d, text, f) <= max_w: return f
+    return mono(sizes[-1])
+
 def stat_boxes(d, y, stats):
     n = len(stats)
     if not n: return
@@ -156,7 +163,9 @@ def stat_boxes(d, y, stats):
         x = LEFT + i * (bw + gap)
         d.rounded_rectangle([x, y, x + bw, y + 72], radius=8, fill=SURFACE, outline=MUTED, width=1)
         d.text((x + 14, y + 10), str(label).upper()[:24], fill=MUTED_FG, font=F_LABEL)
-        d.text((x + 14, y + 30), str(val), fill=col(color), font=F_STAT)
+        vf = fit_font(d, str(val), bw - 28)
+        # vertically center smaller values in the same slot as the 32px ones
+        d.text((x + 14, y + 30 + (32 - vf.size) // 2), str(val), fill=col(color), font=vf)
 
 def quote_strip(d, y, q):
     accent = col(q.get("accent", "gold"))
