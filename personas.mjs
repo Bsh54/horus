@@ -30,7 +30,7 @@ export const PERSONAS = {
 // Which voice owns which moment.
 const OWNER = {
   goal: "fuego", penalty: "fuego", shootout: "fuego", comeback: "fuego",
-  red: "professor", yellow: "professor", var: "professor", fulltime: "professor",
+  red: "professor", yellow: "professor", var: "professor", fulltime: "professor", phase: "professor",
   market: "opta", kickoff: "opta", upcoming: "opta", corner: "opta",
 };
 export const personaFor = (kind) => PERSONAS[OWNER[kind] || "professor"];
@@ -60,6 +60,10 @@ const T = {
   ],
   kickoff: [
     (c) => `${c.prob} says ${c.fav} — but probabilities don't take kick-offs.`,
+  ],
+  phase: [
+    (c) => `${c.score} as we stand — the next goal decides where this match goes.`,
+    (c) => `Everything still to play for at ${c.score}.`,
   ],
   fulltime: [
     (c) => `Full-time, ${c.score}. Every stat sealed by TxLINE, provable on Solana.`,

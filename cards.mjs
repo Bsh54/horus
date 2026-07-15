@@ -176,6 +176,15 @@ export function buildEventJob(ev, ctx) {
       stats: odds ? [["1", String(odds.home), "fg"], ["X", String(odds.draw), "fg"], ["2", String(odds.away), "fg"]] : [],
       note: ev.note,
     };
+    case "phase": return {
+      // half-time, second half, extra time: score card with cumulative stats
+      ...common, kind: "fulltime", badge: (ev.text || "PHASE").toUpperCase(), badgeColor: "fg", live: true,
+      stats: [
+        [texts.corners || "Corners", `${(state?.corners || [0, 0])[0]} - ${(state?.corners || [0, 0])[1]}`, "fg"],
+        [texts.cards || "Cards", `${(state?.yellow || [0, 0])[0] + (state?.red || [0, 0])[0]} - ${(state?.yellow || [0, 0])[1] + (state?.red || [0, 0])[1]}`, "fg"],
+      ],
+      quote: ev.quote,
+    };
     case "fulltime": return {
       ...common, kind: "fulltime", badge: texts.fulltime || "FULL-TIME", badgeColor: "fg", live: false,
       stats: [

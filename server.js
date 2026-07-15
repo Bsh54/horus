@@ -328,12 +328,16 @@ async function sendPhaseChooser(bot, chatId) {
   const counts = { live: 0, upcoming: 0, finished: 0 };
   for (const id of allOfferedFixtures()) counts[phaseOfFixture(id)]++;
   const lang = users.langOf(chatId);
-  const [tLive, tUp, tFin] = await Promise.all([i18n.t("live_now", lang), i18n.t("upcoming", lang), i18n.t("finished", lang)]);
-  await bot.sendText(chatId, `<b>${await i18n.t("matches_menu", lang)}</b>`, {
+  const [tLive, tUp, tFin, tMatches] = await Promise.all([
+    i18n.t("live_now", lang), i18n.t("upcoming", lang), i18n.t("finished", lang), i18n.translate("matches", lang),
+  ]);
+  // wide, breathing buttons: one full-width row per section
+  const pad = (s) => `  ${s}  `;
+  await bot.sendText(chatId, `<b>${await i18n.t("matches_menu", lang)}</b>\n\n${await i18n.translate("Pick a section:", lang)}`, {
     reply_markup: { inline_keyboard: [
-      [{ text: `${tLive} (${counts.live})`, callback_data: "phase:live" }],
-      [{ text: `${tUp} (${counts.upcoming})`, callback_data: "phase:upcoming" }],
-      [{ text: `${tFin} (${counts.finished})`, callback_data: "phase:finished" }],
+      [{ text: pad(`🔴  ${tLive}  ·  ${counts.live} ${tMatches}`), callback_data: "phase:live" }],
+      [{ text: pad(`${tUp}  ·  ${counts.upcoming} ${tMatches}`), callback_data: "phase:upcoming" }],
+      [{ text: pad(`${tFin}  ·  ${counts.finished} ${tMatches}`), callback_data: "phase:finished" }],
     ] },
   });
 }
@@ -441,7 +445,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       await botCommand({ chatId, text: "/start", from, bot });
     } else if (plan === "premium") {
       if (!bank) { await sendT(bot, chatId, "The bank is offline right now — try again in a moment."); return; }
-      await sendT(bot, chatId, "Processing your 0.1 SOL payment on Solana devnet…");
+      await sendT(bot, chatId, "⏳ Processing your 0.1 SOL payment on Solana devnet…");
       try {
         const sig = await bank.pay(chatId, users.PREMIUM_SOL, "premium");
         users.setPlan(chatId, "premium", sig);
@@ -473,8 +477,19 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
   };
   switch ((cmd || "").toLowerCase()) {
     case "/start":
+    case "/help":
       await sendT(bot, chatId,
-        `<b>${name}, I'm HORUS.</b>\nLive World Cup coverage with the betting market's read, right here.\n\n/matches — pick a match\n/wallet — balance and bets\n/plan — ${users.isPremium(chatId) ? "Premium" : "Free"} plan\n/language — change language\n\n<i>/stopreplay leaves the current match</i>`);
+        `<b>I'm HORUS.</b>\n` +
+        `Live World Cup coverage with the betting market's read.\n\n` +
+        `<b>Guide</b>\n\n` +
+        `/matches — browse matches: live, upcoming or finished\n\n` +
+        `/ask — ask me anything about a live match\n\n` +
+        `/verify — prove a score against the Solana on-chain record\n\n` +
+        `/wallet — your devnet SOL balance and bets\n\n` +
+        `/plan — your plan and the on-chain upgrade\n\n` +
+        `/language — change language\n\n` +
+        `/stopreplay — leave the match you're watching\n\n` +
+        `<i>Pick a finished match to replay it as if live — you choose the speed (x2, x5 or normal).</i>`);
       break;
     case "/ask": {
       if (!arg) { await sendT(bot, chatId, "Ask me anything about the live matches: /ask who is winning?"); break; }

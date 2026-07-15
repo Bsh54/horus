@@ -119,9 +119,10 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   async function dispatchCards(fixtureId, ev, d) {
     let kind = CARD_KIND[ev.kind];
     if (ev.kind === "period" && /finished|full/i.test(ev.text || "")) kind = "fulltime";
-    if (ev.kind === "period" && /1st half/i.test(ev.text || "")) kind = "kickoff";
+    else if (ev.kind === "period" && /1st half/i.test(ev.text || "")) kind = "kickoff";
+    else if (ev.kind === "period" && ev.text) kind = "phase"; // halftime, 2nd half, ET…
     if (!kind) return;
-    const premium = bot.followersOf(fixtureId).filter((f) => isPremium(f.chatId));
+    const premium = bot.followersOf(fixtureId); // everyone gets cards now
     if (!premium.length) return;
     const st = getState(fixtureId) || {};
     if (kind === "fulltime" && st.seq) ev = { ...ev, verified: `VERIFIED — TxLINE proof on Solana · seq ${st.seq} · statKey 1` };
@@ -158,7 +159,8 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       for (const k of ["goal", "red_card", "yellow_card", "corner", "win_probability", "fulltime", "kickoff", "odds_moved"])
         texts[k] = (await tKey(k, lang)).toUpperCase();
       const quoteText = await translate(quote.text, lang);
-      const job = buildEventJob({ ...ev, kind, quote: { author: quote.author, text: quoteText } }, { ...ctx, texts });
+      const evLang = kind === "phase" && ev.text ? { ...ev, text: await translate(ev.text, lang) } : ev;
+      const job = buildEventJob({ ...evLang, kind, quote: { author: quote.author, text: quoteText } }, { ...ctx, texts });
       if (!job) continue;
       const cacheKey = `${fixtureId}-${kind}-${(st.score || []).join("")}-${st.minute ?? "x"}-${lang}`;
       try {

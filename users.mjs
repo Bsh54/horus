@@ -43,7 +43,10 @@ export function setPlan(chatId, plan, txSig = null) {
   save();
 }
 
-export const isPremium = (chatId) => getUser(chatId).plan === "premium";
+// Product decision (2026-07-15): every user gets the full experience — cards,
+// unlimited AI, voice. The plan portal stays as the on-chain payment showcase.
+export const isPremium = () => true;
+export const paidPremium = (chatId) => getUser(chatId).plan === "premium";
 export const langOf = (chatId) => getUser(chatId).lang || "en";
 export const isOnboarded = (chatId) => { const u = getUser(chatId); return !!(u.lang && u.plan); };
 
@@ -51,13 +54,8 @@ const today = () => new Date().toISOString().slice(0, 10);
 
 // AI question quota: premium unlimited, free FREE_AI_PER_DAY/day.
 // Returns { ok, left } and consumes one question when ok.
-export function useAiQuestion(chatId) {
-  const u = getUser(chatId);
-  if (u.plan === "premium") return { ok: true, left: Infinity };
-  if (u.ai.day !== today()) u.ai = { day: today(), used: 0 };
-  if (u.ai.used >= FREE_AI_PER_DAY) { save(); return { ok: false, left: 0 }; }
-  u.ai.used++; save();
-  return { ok: true, left: FREE_AI_PER_DAY - u.ai.used };
+export function useAiQuestion() {
+  return { ok: true, left: Infinity }; // free-plan quota removed with the gate
 }
 
 export function allUsers() { return Object.entries(users).map(([chatId, u]) => ({ chatId, ...u })); }
