@@ -404,6 +404,28 @@ async function sendT(bot, chatId, text, extra = {}) {
   return bot.sendText(chatId, await i18n.translate(text, users.langOf(chatId)), extra);
 }
 
+// Replays wait for the fan: speed is chosen, then a position (or "Kick off")
+// actually starts the match. chatId -> { fid, speed }
+const pendingReplays = new Map();
+
+async function startReplayFor(chatId, bot) {
+  const pending = pendingReplays.get(String(chatId));
+  if (!pending) return;
+  pendingReplays.delete(String(chatId));
+  const { fid, speed } = pending;
+  const meta = metaOf(fid) || { home: "Home", away: "Away" };
+  const events = await scoreEventsFor(Number(fid)).catch(() => []);
+  const run = horus.relive(chatId, Number(fid), meta, speed, events);
+  if (bank) {
+    run.then(async () => {
+      if (!bank.openBetsFor(fid).length) return;
+      const res = horus.finalResultOf(Number(fid), meta);
+      if (res == null) return;
+      await bank.settle(fid, res, (cid, txt) => punditBot.sendText(cid, txt));
+    }).catch((e) => console.log("[bank] settle error:", e.message));
+  }
+}
+
 async function sendPlanPortal(bot, chatId) {
   const lang = users.langOf(chatId);
   const [title, free, premium] = await Promise.all([
@@ -450,8 +472,10 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         const sig = await bank.pay(chatId, users.PREMIUM_SOL, "premium");
         users.setPlan(chatId, "premium", sig);
         const done = await i18n.t("payment_received", users.langOf(chatId));
-        await bot.sendText(chatId, `${done}\n<a href="${bank.explorer(sig)}">View the transaction on Solana Explorer</a>`);
-        await botCommand({ chatId, text: "/start", from, bot });
+        await bot.sendText(chatId,
+          `<b>${done}</b>\n\n` +
+          `<a href="${bank.explorer(sig)}">View the transaction on Solana Explorer</a>\n\n` +
+          `${await i18n.translate("Next: /matches to pick your first match.", users.langOf(chatId))}`);
       } catch (e) {
         console.log("[premium] payment failed:", e.message);
         await sendT(bot, chatId, "Couldn't reach Solana devnet — try again in a moment.");
@@ -630,30 +654,32 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         break;
       }
       if (text === "noop") break;
-      if (text.startsWith("rl:")) { // pace chosen from the inline keyboard
-        const [, fid, sec] = text.split(":");
+      if (text.startsWith("rl:")) { // speed chosen — offer a position BEFORE kick-off
+        const [, fid, speed] = text.split(":");
         horus.stopReplay(chatId);
-        const events = await scoreEventsFor(Number(fid)).catch(() => []);
+        pendingReplays.set(String(chatId), { fid: Number(fid), speed: Number(speed) });
         const meta = metaOf(fid) || { home: "Home", away: "Away" };
-        const run = horus.relive(chatId, Number(fid), meta, Number(sec), events);
-        if (bank) {
-          const odds = horus.preMatchOdds(Number(fid));
-          if (odds && !bank.hasOpenBet(chatId, fid)) {
-            await bot.sendText(chatId,
-              `<b>Take on the market?</b> Pre-match odds, straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet) — settled on-chain at the final whistle.`,
-              { reply_markup: { inline_keyboard: [[
-                { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${fid}:0` },
-                { text: `Draw @ ${odds.draw}`, callback_data: `bet:${fid}:1` },
-                { text: `${meta.away} @ ${odds.away}`, callback_data: `bet:${fid}:2` },
-              ]] } });
-          }
-          run.then(async () => {
-            if (!bank.openBetsFor(fid).length) return;
-            const res = horus.finalResultOf(Number(fid), meta);
-            if (res == null) return;
-            await bank.settle(fid, res, (cid, txt) => bot.sendText(cid, txt));
-          }).catch((e) => console.log("[bank] settle error:", e.message));
+        const odds = bank ? horus.preMatchOdds(Number(fid)) : null;
+        if (odds && !bank.hasOpenBet(chatId, fid)) {
+          await sendT(bot, chatId,
+            `<b>Take a position before kick-off?</b>\n\n` +
+            `Pre-match odds, straight from the feed.\n` +
+            `Stake ${bank.STAKE_SOL} SOL (devnet), settled on-chain at the final whistle.\n\n` +
+            `<i>Or skip straight to the match.</i>`,
+            { reply_markup: { inline_keyboard: [[
+              { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${fid}:0` },
+              { text: `Draw @ ${odds.draw}`, callback_data: `bet:${fid}:1` },
+              { text: `${meta.away} @ ${odds.away}`, callback_data: `bet:${fid}:2` },
+            ], [
+              { text: "▶ Kick off", callback_data: `go:${fid}` },
+            ]] } });
+        } else {
+          await startReplayFor(chatId, bot); // nothing to offer — straight in
         }
+        break;
+      }
+      if (text.startsWith("go:")) { // fan skipped the bet — kick off now
+        await startReplayFor(chatId, bot);
         break;
       }
       if (text.startsWith("bet:")) { // side tapped on the betting keyboard
@@ -669,7 +695,8 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         try {
           const betRec = await bank.placeBet(chatId, fid, +side, sideName, taken);
           await bot.sendText(chatId,
-            `<b>Position taken: ${sideName} @ ${taken}</b>\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\nSettlement lands in your wallet at the final whistle. /wallet to check it.`);
+            `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\n<i>Settlement lands in your wallet at the final whistle.</i>`);
+          await startReplayFor(chatId, bot); // position taken — now kick off
         } catch (e) {
           console.log("[bank] bet failed:", e.message);
           await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment.");

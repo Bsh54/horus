@@ -239,18 +239,38 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       const t = inPlay.reduce((a, b) => (Math.abs(b.ts - target) < Math.abs(a.ts - target) ? b : a));
       return probOf(t);
     };
+    // running score/cards tracked from the FULL play list, so cards carry
+    // correct cumulative stats even for plays the text budget skipped
+    const nameOf = (t) => String(t || "").match(/(?:\d\.\s+|^)([\p{Lu}][\p{L}'.’-]+(?: [\p{Lu}][\p{L}'.’-]+){0,3}) \(/u)?.[1] || null;
+    const teamOf = (t) => String(t || "").match(/\(([^)]+)\)/)?.[1] || null;
+    const isHomeTeam = (t) => teamOf(t) != null && String(meta.home).toLowerCase().includes(String(teamOf(t)).toLowerCase().split(" ")[0]);
     return chosen.map((p) => {
-      let txt;
-      if (p.type === "Kickoff") txt = `⏱ <b>We're underway — ${meta.home} against ${meta.away}.</b> ${marketPhrase(meta, probAt(0, 1))}`;
-      else if (p.type === "Halftime") txt = `⏱ <b>Half-time.</b> ${marketPhrase(meta, probAt(p.min || 45, 1))}`;
-      else if (p.type === "Start 2nd Half") txt = "⏱ <b>Second half underway.</b>";
-      else if (p.type === "End Regular Time") txt = "🏁 <b>Full time.</b>";
-      else if (isGoalPlay(p)) {
-        const mkt = marketPhrase(meta, probAt((p.min || 0) + 1, p.period));
+      let txt, card = null;
+      const probs = probAt((p.min || 0) + 1, p.period);
+      if (p.type === "Kickoff") {
+        txt = `⏱ <b>We're underway — ${meta.home} against ${meta.away}.</b> ${marketPhrase(meta, probAt(0, 1))}`;
+        card = { kind: "kickoff" };
+      } else if (p.type === "Halftime") {
+        txt = `⏱ <b>Half-time.</b> ${marketPhrase(meta, probAt(p.min || 45, 1))}`;
+        card = { kind: "phase", text: "Half-time" };
+      } else if (p.type === "Start 2nd Half") txt = "⏱ <b>Second half underway.</b>";
+      else if (p.type === "End Regular Time") {
+        txt = "🏁 <b>Full time.</b>";
+        card = { kind: "fulltime" };
+      } else if (isGoalPlay(p)) {
+        const mkt = marketPhrase(meta, probs);
         txt = `⚽ <b>${p.text}</b>${mkt ? "\n" + mkt : ""}`;
-      } else txt = `${PLAY_EMOJI[p.type] || ""} ${p.text}`.trim();
+        // "Goal! Argentina 1, Egypt 0. Player (Team)…" — score straight from the text
+        const sc = String(p.text).match(/ (\d+)(?:\(\d+\))?, .*? (\d+)(?:\(\d+\))?\./);
+        card = { kind: "goal", player: nameOf(p.text), isHome: isHomeTeam(p.text),
+                 score: sc ? [Number(sc[1]), Number(sc[2])] : null, probs };
+      } else {
+        txt = `${PLAY_EMOJI[p.type] || ""} ${p.text}`.trim();
+        if (/Red Card|Second Yellow/i.test(p.type))
+          card = { kind: "red", player: nameOf(p.text), isHome: isHomeTeam(p.text), probs };
+      }
       // paced on match minutes so quiet spells compress and action clusters
-      return { ts: p.min * 60000 + p.idx, kind: p.type, big: isGoalPlay(p) || /Red|Second Yellow/i.test(p.type), min: p.min, txt };
+      return { ts: p.min * 60000 + p.idx, kind: p.type, big: isGoalPlay(p) || /Red|Second Yellow/i.test(p.type), min: p.min, txt, card };
     });
   }
 
@@ -399,6 +419,32 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return parts.join(" ");
   }
 
+  // Visual card for a replay moment: same renderer as live, in the fan's
+  // language, caption = the commentary line. Returns false to fall back to text.
+  async function sendReplayCard(chatId, fixtureId, meta, m, replaySt) {
+    try {
+      const c = m.card;
+      if (c.kind === "goal" && c.score) replaySt.score = c.score;
+      if (c.kind === "red") replaySt.red[c.isHome ? 0 : 1]++;
+      const lang = langOf(chatId);
+      const texts = {};
+      for (const k of ["goal", "red_card", "corner", "win_probability", "fulltime", "kickoff"])
+        texts[k] = (await tKey(k, lang)).toUpperCase();
+      const caption = await translate(m.txt.replace(/<[^>]+>/g, ""), lang);
+      const player = c.player ? { name: c.player, photo: playerPhoto(c.player), halo: c.kind === "goal", desat: c.kind === "red" ? 0.4 : 0 } : null;
+      const q = quoteFor(c.kind, { fixtureId, team: c.isHome ? meta.home : meta.away, player: c.player, minute: m.min, score: replaySt.score.join("-"),
+        prob: c.probs ? Math.round((c.isHome ? c.probs.home : c.probs.away) * 100) + "%" : null,
+        fav: c.probs ? (c.probs.home >= c.probs.away ? meta.home : meta.away) : "", remaining: m.min != null ? Math.max(0, 90 - m.min) : null });
+      const job = buildEventJob(
+        { kind: c.kind, isHome: c.isHome, player, text: c.text, quote: { author: q.author, text: await translate(q.text, lang) } },
+        { meta, state: { ...replaySt, minute: m.min }, probs: c.probs, prevProbs: null, odds: null, texts });
+      if (!job) return false;
+      const png = await renderCard(`rl-${fixtureId}-${c.kind}-${replaySt.score.join("")}-${m.min ?? "x"}-${lang}`, job);
+      const r = await bot.sendPhoto(chatId, png, caption);
+      return !!r?.ok;
+    } catch (e) { console.log("[cards] replay render failed:", e.message); return false; }
+  }
+
   const reliveRuns = new Map(); // chatId -> abort flag
   // speed: time multiplier over the real match clock (1 = real time, 2, 5)
   async function relive(chatId, fixtureId, meta, speed = 5, events = []) {
@@ -432,12 +478,15 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const lively = await llmRewrite(meta, moments);
     if (lively) moments = lively;
     let prevTs = moments[0].ts;
+    const replaySt = { score: [0, 0], yellow: [0, 0], red: [0, 0], corners: [0, 0] };
     for (const m of moments) {
       // cap quiet spells so half-time never freezes the chat for 15 minutes
       const wait = Math.min(90000, Math.max(800, (m.ts - prevTs) / factor));
       await new Promise((r) => setTimeout(r, wait));
       if (reliveRuns.get(String(chatId))?.stop) { reliveRuns.delete(String(chatId)); return; }
       prevTs = m.ts;
+      // big moments arrive as a visual card; everything else stays text
+      if (m.card && (await sendReplayCard(chatId, fixtureId, meta, m, replaySt))) continue;
       await bot.sendText(chatId, await translate(m.txt, langOf(chatId)));
     }
     // with real play-by-play the full-time whistle already closed the show
