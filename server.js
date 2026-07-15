@@ -295,7 +295,7 @@ function liveContextFor(id) {
 }
 
 const PAGE_SIZE = 15;
-async function sendMatchesPage(bot, chatId, rows, page = 0) {
+async function sendMatchesPage(bot, chatId, rows, page = 0, editMsgId = null) {
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   page = Math.min(Math.max(0, page), pages - 1);
   const slice = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
@@ -309,9 +309,10 @@ async function sendMatchesPage(bot, chatId, rows, page = 0) {
   nav.push({ text: `${page + 1}/${pages}`, callback_data: "noop" });
   if (page < pages - 1) nav.push({ text: "Next ➡️", callback_data: `pg:${page + 1}` });
   kb.push(nav);
-  await bot.sendText(chatId, `⚽ <b>Match coverage</b> — ${rows.length} matches available. Tap one to watch.`, {
-    reply_markup: { inline_keyboard: kb },
-  });
+  const text = `⚽ <b>Match coverage</b> — ${rows.length} matches available. Tap one to watch.`;
+  const extra = { reply_markup: { inline_keyboard: kb } };
+  if (editMsgId) await bot.editText(chatId, editMsgId, text, extra); // Prev/Next update the same bubble
+  else await bot.sendText(chatId, text, extra);
 }
 
 async function sendSpeedChoice(bot, chatId, id) {
@@ -325,7 +326,7 @@ async function sendSpeedChoice(bot, chatId, id) {
   });
 }
 
-async function botCommand({ chatId, text, from, bot }) {
+async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
   const name = from.first_name || from.username || "fan";
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(" ");
@@ -338,7 +339,7 @@ async function botCommand({ chatId, text, from, bot }) {
   switch ((cmd || "").toLowerCase()) {
     case "/start":
       await bot.sendText(chatId,
-        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, pick your pace, and follow it with my commentary.\n\n<b>Main commands</b>\n⚽ /matches — pick a match to watch\n📊 /live — current picture\n\n<b>More</b>\n⏹ /stopreplay — leave the match\n/unfollow — mute all alerts`);
+        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, pick your pace, and follow it with my commentary.\n\n⚽ /matches — pick a match to watch\n⏹ /stopreplay — leave the current match`);
       break;
     case "/matches": {
       const rows = listMatches();
@@ -388,9 +389,9 @@ async function botCommand({ chatId, text, from, bot }) {
         await sendSpeedChoice(bot, chatId, Number(text.split(":")[1]));
         break;
       }
-      if (text.startsWith("pg:")) { // pagination in the match list
+      if (text.startsWith("pg:")) { // pagination in the match list — edit the list bubble in place
         const rows = catalog.filter((c) => hasArchive(c.id)).map((c) => ({ id: c.id, meta: c }));
-        await sendMatchesPage(bot, chatId, rows, Number(text.split(":")[1]));
+        await sendMatchesPage(bot, chatId, rows, Number(text.split(":")[1]), isCallback ? msgId : null);
         break;
       }
       if (text === "noop") break;

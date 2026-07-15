@@ -31,22 +31,16 @@ export function createBot({ onCommand }) {
     } catch (e) { return { ok: false, description: e.message }; }
   }
 
+  const sanitize = (t) => String(t).replace(/\bNaN\b|\bundefined\b|\bnull\b/g, "—");
+
   async function sendText(chatId, text, extra = {}) {
     // last line of defence: no computed placeholder ever reaches a fan
-    const clean = String(text).replace(/\bNaN\b|\bundefined\b|\bnull\b/g, "—");
-    return call("sendMessage", { chat_id: chatId, text: clean, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
+    return call("sendMessage", { chat_id: chatId, text: sanitize(text), parse_mode: "HTML", disable_web_page_preview: true, ...extra });
   }
 
-  async function sendVoice(chatId, oggPath, caption) {
-    // multipart upload for the voice note
-    try {
-      const form = new FormData();
-      form.append("chat_id", String(chatId));
-      if (caption) form.append("caption", caption);
-      form.append("voice", new Blob([readFileSync(oggPath)], { type: "audio/ogg" }), "pundit.ogg");
-      const r = await fetch(`${API}/sendVoice`, { method: "POST", body: form });
-      return await r.json();
-    } catch (e) { return { ok: false, description: e.message }; }
+  // update an existing bubble in place (paginated lists, menus)
+  async function editText(chatId, messageId, text, extra = {}) {
+    return call("editMessageText", { chat_id: chatId, message_id: messageId, text: sanitize(text), parse_mode: "HTML", disable_web_page_preview: true, ...extra });
   }
 
   // ---- long polling loop ----
@@ -65,7 +59,9 @@ export function createBot({ onCommand }) {
             const chatId = msg.chat.id;
             const from = u.message?.from || u.callback_query?.from || {};
             if (u.callback_query) call("answerCallbackQuery", { callback_query_id: u.callback_query.id });
-            try { await onCommand({ chatId, text: text.trim(), from, bot: api }); } catch (e) { console.log("[bot] handler error:", e.message); }
+            try {
+              await onCommand({ chatId, text: text.trim(), from, bot: api, msgId: msg.message_id, isCallback: !!u.callback_query });
+            } catch (e) { console.log("[bot] handler error:", e.message); }
           }
         }
       } catch { await new Promise((res) => setTimeout(res, 3000)); }
@@ -73,10 +69,10 @@ export function createBot({ onCommand }) {
   })();
 
   const api = {
-    sendText, sendVoice, call,
+    sendText, editText, call,
     subs,
     subscribe(chatId, target, name) {
-      const s = subs.get(String(chatId)) || { follows: [], voice: true, name };
+      const s = subs.get(String(chatId)) || { follows: [], name };
       if (target === "all") s.follows = ["all"];
       else if (!s.follows.includes(target) && s.follows[0] !== "all") s.follows.push(target);
       s.name = name || s.name;
@@ -84,11 +80,6 @@ export function createBot({ onCommand }) {
       return s;
     },
     unsubscribe(chatId) { subs.delete(String(chatId)); saveSubs(); },
-    setVoice(chatId, on) {
-      const s = subs.get(String(chatId));
-      if (s) { s.voice = on; subs.set(String(chatId), s); saveSubs(); }
-      return s;
-    },
     followersOf(fixtureId) {
       const out = [];
       for (const [chatId, s] of subs) {
