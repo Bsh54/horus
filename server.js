@@ -7,6 +7,7 @@ import { WebSocketServer } from "ws";
 import { createServer } from "http";
 import { createHash, randomUUID } from "crypto";
 import { readFileSync, existsSync, appendFileSync, mkdirSync, writeFileSync } from "fs";
+import { gzipSync, gunzipSync } from "zlib";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { TxLive } from "./txline-live.mjs";
@@ -216,15 +217,77 @@ function hasArchive(id) {
   return existsSync(join(DATA_DIR, "history", `t1x2-${id}.json.gz`));
 }
 
+// Real match events (goals, cards, phases with minutes) decoded from the
+// archived score states of a fixture. Fetched once, cached in history/.
+async function scoreEventsFor(fid) {
+  const file = join(DATA_DIR, "history", `sc-${fid}.json.gz`);
+  let states = null;
+  if (existsSync(file)) {
+    states = JSON.parse(gunzipSync(readFileSync(file)).toString());
+  } else {
+    try {
+      const creds = JSON.parse(readFileSync(join(DATA_DIR, "txline-credentials.json"), "utf8"));
+      const jwt = (await (await fetch(creds.api + "/auth/guest/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).json()).token;
+      const H = { Authorization: `Bearer ${jwt}`, "X-Api-Token": creds.apiToken };
+      const get = async (p) => {
+        const r = await fetch(creds.api + p, { headers: H });
+        const t = await r.text();
+        return t.trim() ? JSON.parse(t) : [];
+      };
+      let rows = await get(`/api/scores/snapshot/${fid}`);
+      if (!Array.isArray(rows)) rows = [];
+      try {
+        const hist = await get(`/api/scores/historical/${fid}`);
+        if (Array.isArray(hist)) rows = rows.concat(hist);
+      } catch {}
+      rows.sort((a, b) => (a.Ts || 0) - (b.Ts || 0));
+      states = rows;
+      writeFileSync(file, gzipSync(JSON.stringify(rows)));
+    } catch { states = []; }
+  }
+  // snapshot states can be duplicated or out of order — walk them defensively:
+  // scores must be monotonic, never exceed the final score, phases fire once.
+  const withStats = states.filter((m) => m && m.Stats);
+  const finalScore = withStats.length ? decodeTxStats(withStats[withStats.length - 1].Stats).score : [99, 99];
+  const evs = [];
+  const phasesSeen = new Set();
+  let prev = null;
+  for (const m of withStats) {
+    const d = decodeTxStats(m.Stats);
+    const minute = m.Clock?.Seconds != null ? Math.floor(m.Clock.Seconds / 60) : null;
+    const ts = m.Ts || 0;
+    if (prev && (d.score[0] < prev.score[0] || d.score[1] < prev.score[1]
+      || d.score[0] > finalScore[0] || d.score[1] > finalScore[1])) continue; // stale or phantom state
+    if (prev) {
+      for (const side of [0, 1]) {
+        if (d.score[side] === prev.score[side] + 1) evs.push({ ts, kind: "goal", isHome: side === 0, minute, score: [...d.score] });
+        if (d.yellow[side] > prev.yellow[side]) evs.push({ ts, kind: "yellow", isHome: side === 0, minute });
+        if (d.red[side] > prev.red[side]) evs.push({ ts, kind: "red", isHome: side === 0, minute, score: [...d.score] });
+      }
+    }
+    if (PHASES[m.StatusId] && !phasesSeen.has(m.StatusId)) {
+      phasesSeen.add(m.StatusId);
+      evs.push({ ts, kind: "phase", text: PHASES[m.StatusId], minute, score: [...d.score] });
+    }
+    prev = { score: d.score, yellow: d.yellow, red: d.red };
+  }
+  return evs;
+}
+
 function liveContextFor(id) {
   const meta = live ? live.metaFor(id) : null;
   const st = scoreStates.get(id);
   const probs = liveAgent.state.fixtures.get(id)?.lastProbs;
   const odds = liveAgent.state.fixtures.get(id)?.lastOdds;
   const parts = [matchLabel(id)];
-  if (st) parts.push(`score ${st.score[0]}-${st.score[1]}, minute ${st.minute ?? "?"}, phase ${st.gameState || PHASES[st.statusId] || "scheduled"}, yellows ${st.yellow.join("-")}, reds ${st.red.join("-")}, corners ${st.corners.join("-")}`);
-  if (probs && meta) parts.push(`win probabilities: ${meta.home} ${(probs.home * 100).toFixed(1)}%, draw ${(probs.draw * 100).toFixed(1)}%, ${meta.away} ${(probs.away * 100).toFixed(1)}%`);
-  if (odds) parts.push(`odds 1X2: ${odds.home} / ${odds.draw} / ${odds.away}`);
+  const m2 = metaOf(id);
+  if (m2?.startTime) parts.push(`kick-off: ${new Date(m2.startTime).toISOString().slice(0, 16).replace("T", " ")} UTC`);
+  if (st && Array.isArray(st.score) && st.score[0] != null)
+    parts.push(`score ${st.score[0]}-${st.score[1]}, minute ${st.minute ?? "?"}, phase ${st.gameState || PHASES[st.statusId] || "scheduled"}, yellows ${(st.yellow || []).join("-")}, reds ${(st.red || []).join("-")}, corners ${(st.corners || []).join("-")}`);
+  if (probs && meta && Number.isFinite(probs.home))
+    parts.push(`win probabilities: ${meta.home} ${(probs.home * 100).toFixed(1)}%, draw ${(probs.draw * 100).toFixed(1)}%, ${meta.away} ${(probs.away * 100).toFixed(1)}%`);
+  if (odds && Number.isFinite(odds.home)) parts.push(`odds 1X2: ${odds.home} / ${odds.draw} / ${odds.away}`);
+  if (parts.length === (m2?.startTime ? 2 : 1)) parts.push("no live data for this match right now — it may be finished or not started yet");
   return parts.join("\n");
 }
 
@@ -239,9 +302,9 @@ async function sendMatchesPage(bot, chatId, rows, page = 0) {
     return [{ text: `${cup}${r.meta.home} 🆚 ${r.meta.away}${when}`, callback_data: `pick:${r.id}` }];
   });
   const nav = [];
-  if (page > 0) nav.push({ text: "⬅️ Newer", callback_data: `pg:${page - 1}` });
+  if (page > 0) nav.push({ text: "⬅️ Prev", callback_data: `pg:${page - 1}` });
   nav.push({ text: `${page + 1}/${pages}`, callback_data: "noop" });
-  if (page < pages - 1) nav.push({ text: "Older ➡️", callback_data: `pg:${page + 1}` });
+  if (page < pages - 1) nav.push({ text: "Next ➡️", callback_data: `pg:${page + 1}` });
   kb.push(nav);
   await bot.sendText(chatId, `⚽ <b>Matches on HORUS TV</b> — ${rows.length} matches ready to watch. Tap one! 🔴`, {
     reply_markup: { inline_keyboard: kb },
@@ -343,7 +406,8 @@ async function botCommand({ chatId, text, from, bot }) {
       if (text.startsWith("rl:")) { // pace chosen from the inline keyboard
         const [, fid, sec] = text.split(":");
         horus.stopReplay(chatId);
-        horus.relive(chatId, Number(fid), metaOf(fid) || { home: "Home", away: "Away" }, Number(sec));
+        const events = await scoreEventsFor(Number(fid)).catch(() => []);
+        horus.relive(chatId, Number(fid), metaOf(fid) || { home: "Home", away: "Away" }, Number(sec), events);
         break;
       }
       if (text.startsWith("/")) await bot.sendText(chatId, "Hmm, I don't know that one! 😅 /start shows everything I can do.");

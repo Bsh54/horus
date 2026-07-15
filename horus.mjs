@@ -205,12 +205,33 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return moments.filter((m, i) => !m.checkpoint || !moments.some((o) => !o.checkpoint && Math.abs(o.ts - m.ts) < 60000));
   }
 
+  // Real score events (from the archived score states) rendered as broadcast lines
+  function eventMoments(events, meta) {
+    const out = [];
+    for (const e of events || []) {
+      const team = e.isHome ? meta.home : meta.away;
+      const min = e.minute != null ? `${e.minute}'` : "";
+      const sc = e.score ? `${meta.home} ${e.score[0]}-${e.score[1]} ${meta.away}` : "";
+      if (e.kind === "goal") out.push({ ts: e.ts, big: true, txt: `⚽ <b>GOOOAL — ${team}!</b> ${sc} (${min}) 🎉` });
+      else if (e.kind === "red") out.push({ ts: e.ts, big: true, txt: `🟥 <b>RED CARD — ${team} down to ten men!</b> (${min}) Drama! ${sc}` });
+      else if (e.kind === "yellow") out.push({ ts: e.ts, txt: `🟨 Yellow card for ${team} (${min})` });
+      else if (e.kind === "phase") out.push({ ts: e.ts, txt: `⏱ <b>${e.text}</b>${sc ? " — " + sc : ""}` });
+    }
+    return out;
+  }
+
   const reliveRuns = new Map(); // chatId -> abort flag
   // durationSec: how long the fan wants the whole match to take
-  async function relive(chatId, fixtureId, meta, durationSec = 300) {
+  async function relive(chatId, fixtureId, meta, durationSec = 300, events = []) {
     const ticks = loadTicksFor(fixtureId);
     if (!ticks || !ticks.length) { await bot.sendText(chatId, "Ah, that one's not in my library yet! 😔 Try another — /matches"); return; }
-    const moments = buildTimeline(ticks, meta);
+    let moments = buildTimeline(ticks, meta);
+    const evMoments = eventMoments(events, meta);
+    if (evMoments.length) {
+      // real events take the lead: drop market-inferred shocks (they duplicate goals)
+      moments = moments.filter((m) => !/💥|📉/.test(m.txt)).concat(evMoments);
+      moments.sort((a, b) => a.ts - b.ts);
+    }
     if (!moments.length) { await bot.sendText(chatId, "That match was so quiet even the market fell asleep 😴 Pick another one — /matches"); return; }
     const span = Math.max(1, moments[moments.length - 1].ts - moments[0].ts);
     const factor = span / (durationSec * 1000); // real ms per replay ms
@@ -224,8 +245,8 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       if (reliveRuns.get(String(chatId))?.stop) { reliveRuns.delete(String(chatId)); return; }
       prevTs = m.ts;
       await bot.sendText(chatId, m.txt);
-      // the biggest swings also arrive as voice
-      if (!m.checkpoint && /💥/.test(m.txt)) {
+      // the biggest moments also arrive as voice
+      if (m.big || (!m.checkpoint && /💥/.test(m.txt))) {
         const spoken = (await llm(PUNDIT_PERSONA, `Say this replay moment as a live pundit voice line: ${m.txt.replace(/<[^>]+>/g, "")}`))
           || m.txt.replace(/[💥📉🏁⏱]/g, "");
         const ogg = await tts(spoken, `relive-${chatId}-${Date.now()}`);
