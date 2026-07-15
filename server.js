@@ -666,7 +666,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       const rows = chatLists.get(String(chatId)) || allOfferedFixtures();
       const id = rows[parseInt(arg, 10) - 1];
       if (!id) { await botCommand({ chatId, text: "/matches", from, bot }); break; }
-      await horus.recap(chatId, Number(id), metaOf(id) || { home: "Home", away: "Away" });
+      await horus.recap(chatId, Number(id), metaOf(id) || { home: "Home", away: "Away" }, sim?.timelineOf(Number(id))?.zero ?? null);
       break;
     }
     case "/wallet": {
@@ -698,7 +698,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         const realPhase = idRaw ? phase : phaseOfFixture(id);
         if (realPhase === "finished") {
           // one recap card + the line-by-line story — nothing to wait for
-          await horus.recap(chatId, Number(id), metaOf(id) || { home: "Home", away: "Away" });
+          await horus.recap(chatId, Number(id), metaOf(id) || { home: "Home", away: "Away" }, sim?.timelineOf(Number(id))?.zero ?? null);
           break;
         }
         const meta = metaOf(id) || { home: "Home", away: "Away" };

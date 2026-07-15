@@ -490,7 +490,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
 
   // Finished match: one recap card + one line-by-line story of the match.
   // No pacing, no betting — the fan taps and gets the whole picture at once.
-  async function recap(chatId, fixtureId, meta) {
+  async function recap(chatId, fixtureId, meta, kickoffTs = null) {
     const lang = langOf(chatId);
     const st = getState(fixtureId) || {};
     const pbp = loadPbp(fixtureId);
@@ -545,13 +545,17 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       `${await translate("Shots on target", lang)}: ${fmt(tally.shotsOn)}`,
       `${await translate("Shots off target", lang)}: ${fmt(tally.shotsOff)}`,
       `${await translate("Goalkeeper saves", lang)}: ${fmt(tally.saves)}`,
-      ...(st.corners ? [`${await translate("Corner kicks", lang)}: ${fmt(st.corners)}`] : []),
+      ...(st.corners ? [`Corners: ${fmt(st.corners)}`] : []), // universal football term — never translated
       `${await translate("Fouls committed", lang)}: ${fmt(tally.fouls)}`,
       `${await translate("Offsides", lang)}: ${fmt(tally.offsides)}`,
       ...(st.yellow ? [`${await translate("Yellow cards", lang)}: ${fmt(st.yellow)}`] : []),
     ].join("\n");
+    const kickLine = kickoffTs
+      ? `${await translate("Kick-off", lang)}: ${new Date(kickoffTs).toISOString().slice(0, 16).replace("T", " ")} UTC\n\n`
+      : "";
     const caption =
-      `<b>${meta.home} ${score} ${meta.away}</b>\n\n` +
+      `<b>${meta.home} ${score} ${meta.away}</b>\n` +
+      kickLine +
       (lines.length ? lines.join("\n\n") + "\n\n" : "") +
       `<b>${await translate("Match stats", lang)}</b>\n${statBlock}`;
     // --- the recap card: score + stat boxes, nothing else ---
