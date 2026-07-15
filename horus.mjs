@@ -495,46 +495,60 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const st = getState(fixtureId) || {};
     const pbp = loadPbp(fixtureId);
     const who = (t, mid) => String(t).match(mid ? /(?:\d\.\s+|^)([\p{Lu}][\p{L}'.’-]+(?: [\p{Lu}][\p{L}'.’-]+){0,3}) \(/u : /^([\p{Lu}][\p{L}'.’-]+(?: [\p{Lu}][\p{L}'.’-]+){0,3}) \(/u)?.[1];
-    const homeSide = (t) => {
-      const team = String(t).match(/\(([^)]+)\)/)?.[1];
-      return team != null && String(meta.home).toLowerCase().includes(team.toLowerCase().split(" ")[0]);
+    // Which side does a name belong to? Match against BOTH team names and
+    // refuse to guess: unmatched events are not counted.
+    const norm = (s) => String(s || "").toLowerCase();
+    const sideOfTeam = (team) => {
+      if (!team) return -1;
+      const t = norm(team);
+      if (norm(meta.home).includes(t) || t.includes(norm(meta.home).split(" ")[0])) return 0;
+      if (norm(meta.away).includes(t) || t.includes(norm(meta.away).split(" ")[0])) return 1;
+      return -1;
     };
-    // --- key moments + full stat counters, from the play-by-play archive ---
+    const parenTeam = (t) => String(t).match(/\(([^)]+)\)/)?.[1];
+    // --- key moments + stat counters from the play-by-play archive ---
+    const GOAL_TYPES = new Set(["Goal", "Goal - Header", "Own Goal", "Penalty - Scored"]);
     const lines = [];
-    const tally = { corners: [0, 0], fouls: [0, 0], shotsOn: [0, 0], shotsOff: [0, 0], offsides: [0, 0], yellows: [0, 0], saves: [0, 0] };
-    const bump = (key, t) => tally[key][homeSide(t) ? 0 : 1]++;
+    const tally = { fouls: [0, 0], shotsOn: [0, 0], shotsOff: [0, 0], offsides: [0, 0], saves: [0, 0] };
+    const bump = (key, side) => { if (side >= 0) tally[key][side]++; };
     if (pbp?.plays) {
       for (const p of pbp.plays) {
         const min = p.min != null ? `${p.min}'` : "–";
         const ty = p.type || "";
-        if (p.goal || /^(Goal|Own Goal|Penalty - Scored)/.test(ty)) {
+        if (GOAL_TYPES.has(ty)) {
           const sc = String(p.text).match(/ (\d+)(?:\(\d+\))?, .*? (\d+)(?:\(\d+\))?\./);
-          const og = /Own Goal/.test(ty) ? " (og)" : /Penalty/.test(ty) ? " (pen)" : "";
+          const og = ty === "Own Goal" ? " (og)" : ty === "Penalty - Scored" ? " (pen)" : "";
           lines.push(`${min}  ⚽ ${who(p.text, true) || "Goal"}${og}${sc ? ` — ${sc[1]}-${sc[2]}` : ""}`);
         } else if (/Red Card|Second Yellow/i.test(ty)) lines.push(`${min}  🟥 ${who(p.text) || "Red card"}`);
-        else if (ty === "Yellow Card") { bump("yellows", p.text); lines.push(`${min}  🟨 ${who(p.text) || "Yellow card"}`); }
+        else if (ty === "Yellow Card") lines.push(`${min}  🟨 ${who(p.text) || "Yellow card"}`);
         else if (/Penalty - (Missed|Saved)/.test(ty)) lines.push(`${min}  ✗ Penalty ${/Saved/.test(ty) ? "saved" : "missed"}`);
         else if (ty === "Halftime") lines.push(`${min}  ⏱ Half-time`);
         else if (ty === "Start Extra Time") lines.push(`${min}  ⏱ Extra time`);
         else if (ty === "End Regular Time") lines.push(`${min}  🏁 Full time`);
-        else if (ty === "Corner Awarded") bump("corners", p.text);
-        else if (ty === "Foul") bump("fouls", p.text);
-        else if (ty === "Shot On Target") bump("shotsOn", p.text);
-        else if (ty === "Shot Off Target" || ty === "Shot Blocked") bump("shotsOff", p.text);
-        else if (ty === "Offside") bump("offsides", p.text);
-        else if (ty === "Save") bump("saves", p.text);
+        // two foul phrasings: "Foul by X (Team)" = Team committed it;
+        // "X (Team) wins a free kick" = the OTHER team committed it
+        else if (ty === "Foul") {
+          const s = sideOfTeam(parenTeam(p.text));
+          if (/Foul by/.test(p.text)) bump("fouls", s);
+          else if (/wins a free kick/.test(p.text)) bump("fouls", s >= 0 ? 1 - s : -1);
+        }
+        else if (ty === "Shot On Target") bump("shotsOn", sideOfTeam(parenTeam(p.text)));
+        else if (ty === "Shot Off Target" || ty === "Shot Blocked") bump("shotsOff", sideOfTeam(parenTeam(p.text)));
+        else if (ty === "Offside") bump("offsides", sideOfTeam(parenTeam(p.text)));
+        else if (ty === "Save") bump("saves", sideOfTeam(parenTeam(p.text)));
       }
     }
     const score = st.score ? `${st.score[0]}-${st.score[1]}` : "";
     const fmt = (a) => `${a[0]} - ${a[1]}`;
+    // corners & yellows come from the TxLINE stats themselves — authoritative
     const statBlock = [
       `${await translate("Shots on target", lang)}: ${fmt(tally.shotsOn)}`,
       `${await translate("Shots off target", lang)}: ${fmt(tally.shotsOff)}`,
-      `${await translate("Saves", lang)}: ${fmt(tally.saves)}`,
-      `${await translate("Corners", lang)}: ${fmt(tally.corners)}`,
-      `${await translate("Fouls", lang)}: ${fmt(tally.fouls)}`,
+      `${await translate("Goalkeeper saves", lang)}: ${fmt(tally.saves)}`,
+      ...(st.corners ? [`${await translate("Corner kicks", lang)}: ${fmt(st.corners)}`] : []),
+      `${await translate("Fouls committed", lang)}: ${fmt(tally.fouls)}`,
       `${await translate("Offsides", lang)}: ${fmt(tally.offsides)}`,
-      `${await translate("Yellow cards", lang)}: ${fmt(tally.yellows)}`,
+      ...(st.yellow ? [`${await translate("Yellow cards", lang)}: ${fmt(st.yellow)}`] : []),
     ].join("\n");
     const caption =
       `<b>${meta.home} ${score} ${meta.away}</b>\n\n` +
