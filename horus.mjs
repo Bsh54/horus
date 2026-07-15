@@ -100,6 +100,113 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return JSON.parse(gunzipSync(readFileSync(f)).toString());
   }
 
+  // archived play-by-play (fetched once from the public feed) — every foul,
+  // shot, save, card, corner and substitution with its minute
+  function loadPbp(fixtureId) {
+    const f = join(DATA, "history", `pbp-${fixtureId}.json.gz`);
+    if (!existsSync(f)) return null;
+    try { return JSON.parse(gunzipSync(readFileSync(f)).toString()); } catch { return null; }
+  }
+
+  // which plays make the broadcast, by importance (0 = always shown)
+  const PLAY_PRIORITY = {
+    "Kickoff": 0, "Goal": 0, "Own Goal": 0, "Penalty Goal": 0, "Penalty Kick Missed": 0,
+    "Red Card": 0, "Second Yellow Card": 0, "Halftime": 0, "Start 2nd Half": 0, "End Regular Time": 0,
+    "Yellow Card": 1, "Save": 1, "Shot On Target": 1,
+    "Shot Off Target": 2, "Shot Blocked": 2, "Corner Awarded": 2, "Substitution": 2,
+    "Offside": 3, "Handball": 3, "Foul": 3,
+  };
+  const PLAY_EMOJI = {
+    "Goal": "⚽", "Own Goal": "⚽", "Penalty Goal": "⚽", "Penalty Kick Missed": "😮",
+    "Red Card": "🟥", "Second Yellow Card": "🟥", "Yellow Card": "🟨",
+    "Save": "🧤", "Shot On Target": "🎯", "Shot Off Target": "💨", "Shot Blocked": "🚧",
+    "Corner Awarded": "⛳", "Substitution": "🔁", "Offside": "🚩", "Foul": "⚠️", "Handball": "⚠️",
+  };
+  const isGoalPlay = (p) => p.goal || /goal$/i.test(p.type);
+
+  // Build the broadcast from real play-by-play: structural moments and goals
+  // always in, then shots/saves/cards/corners/fouls fill the message budget
+  // for the chosen pace. Market reads are injected at kick-off, half-time
+  // and right after each goal from the archived odds.
+  function pbpTimeline(pbp, meta, durationSec, ticks) {
+    const budget = Math.max(20, Math.floor(durationSec / 5)); // ~1 message / 5s max
+    // idx keeps true chronological order (minutes alone tie in stoppage time);
+    // structural plays at 0' arrive with a null minute from the archive
+    const plays = (pbp.plays || [])
+      .map((p, idx) => ({ ...p, idx, min: p.min ?? (PLAY_PRIORITY[p.type] === 0 ? 0 : null) }))
+      .filter((p) => PLAY_PRIORITY[p.type] != null && p.min != null);
+    const chosen = plays.filter((p) => PLAY_PRIORITY[p.type] === 0);
+    for (const lvl of [1, 2, 3]) {
+      const room = budget - chosen.length;
+      if (room <= 0) break;
+      const cand = plays.filter((p) => PLAY_PRIORITY[p.type] === lvl);
+      chosen.push(...(cand.length <= room
+        ? cand
+        : cand.filter((_, i) => i % Math.ceil(cand.length / room) === 0).slice(0, room)));
+    }
+    chosen.sort((a, b) => a.idx - b.idx);
+    // odds lookup by match minute (2nd half shifted by the interval)
+    const inPlay = ticks.filter((t) => t.ir);
+    const kickTs = inPlay.length ? inPlay[0].ts : null;
+    const probAt = (min, period) => {
+      if (kickTs == null) return null;
+      const target = kickTs + (min + (period >= 2 ? 15 : 0)) * 60000;
+      const t = inPlay.reduce((a, b) => (Math.abs(b.ts - target) < Math.abs(a.ts - target) ? b : a));
+      return probOf(t);
+    };
+    return chosen.map((p) => {
+      let txt;
+      if (p.type === "Kickoff") txt = `⏱ <b>We're underway — ${meta.home} against ${meta.away}.</b> ${marketPhrase(meta, probAt(0, 1))}`;
+      else if (p.type === "Halftime") txt = `⏱ <b>Half-time.</b> ${marketPhrase(meta, probAt(p.min || 45, 1))}`;
+      else if (p.type === "Start 2nd Half") txt = "⏱ <b>Second half underway.</b>";
+      else if (p.type === "End Regular Time") txt = "🏁 <b>Full time.</b>";
+      else if (isGoalPlay(p)) {
+        const mkt = marketPhrase(meta, probAt((p.min || 0) + 1, p.period));
+        txt = `⚽ <b>${p.text}</b>${mkt ? "\n" + mkt : ""}`;
+      } else txt = `${PLAY_EMOJI[p.type] || ""} ${p.text}`.trim();
+      // paced on match minutes so quiet spells compress and action clusters
+      return { ts: p.min * 60000 + p.idx, kind: p.type, big: isGoalPlay(p) || /Red|Second Yellow/i.test(p.type), min: p.min, txt };
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // DeepSeek colour layer — rewrites the whole timeline as lively broadcast
+  // lines in one call before pacing starts. Fully optional: any failure or
+  // slow answer falls back to the deterministic lines.
+  // ---------------------------------------------------------------------------
+  const LLM_FILE = join(DATA, "deepseek.json");
+  const esc = (s) => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  async function llmRewrite(meta, moments) {
+    if (!existsSync(LLM_FILE)) return null;
+    try {
+      const cfg = JSON.parse(readFileSync(LLM_FILE, "utf8"));
+      const lines = moments.map((m, i) => `${i}| ${m.txt.replace(/<[^>]+>/g, "")}`);
+      const r = await fetch("https://api.deepseek.com/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${cfg.key}` },
+        body: JSON.stringify({
+          model: cfg.model || "deepseek-chat",
+          thinking: { type: "disabled" },
+          temperature: 0.9,
+          max_tokens: 4000,
+          messages: [
+            { role: "system", content: "You are HORUS, a professional live football commentator. Rewrite each numbered event line as one short, vivid line of live broadcast commentary (max 22 words). Keep every fact exact: minutes, player names, team names, scores, percentages. Professional tone, no hype words, no hashtags, keep the leading emoji if the line has one. Return ONLY a JSON array of strings, same count and order as the input." },
+            { role: "user", content: `Match: ${meta.home} vs ${meta.away}, FIFA World Cup 2026.\n${lines.join("\n")}` },
+          ],
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const j = await r.json();
+      const content = j.choices?.[0]?.message?.content || "";
+      const arr = JSON.parse(content.slice(content.indexOf("["), content.lastIndexOf("]") + 1));
+      if (!Array.isArray(arr) || arr.length !== moments.length) return null;
+      return moments.map((m, i) => {
+        const line = esc(arr[i]).trim();
+        return { ...m, txt: m.big || /^⏱|^🏁/.test(m.txt) ? `<b>${line}</b>` : line };
+      });
+    } catch { return null; }
+  }
+
   function probOf(t) {
     if (t.pct && t.pct.length === 3) { const s = t.pct[0] + t.pct[1] + t.pct[2]; return { home: t.pct[0] / s, draw: t.pct[1] / s, away: t.pct[2] / s }; }
     const inv = [1000 / t.p[0], 1000 / t.p[1], 1000 / t.p[2]]; const s = inv[0] + inv[1] + inv[2];
@@ -182,12 +289,20 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   async function relive(chatId, fixtureId, meta, durationSec = 300, events = []) {
     const ticks = loadTicksFor(fixtureId);
     if (!ticks || !ticks.length) { await bot.sendText(chatId, "No coverage available for that match — /matches for the rest."); return; }
-    let moments = buildTimeline(ticks, meta);
-    const evMoments = eventMoments(events, meta);
-    if (evMoments.length) {
-      // real events take the lead: drop market-inferred shocks (they duplicate goals)
-      moments = moments.filter((m) => !/💥|📉/.test(m.txt)).concat(evMoments);
-      moments.sort((a, b) => a.ts - b.ts);
+    const pbp = loadPbp(fixtureId);
+    const usedPbp = !!(pbp && pbp.plays && pbp.plays.length);
+    let moments;
+    if (usedPbp) {
+      // full play-by-play available: broadcast the real match flow
+      moments = pbpTimeline(pbp, meta, durationSec, ticks);
+    } else {
+      moments = buildTimeline(ticks, meta);
+      const evMoments = eventMoments(events, meta);
+      if (evMoments.length) {
+        // real events take the lead: drop market-inferred shocks (they duplicate goals)
+        moments = moments.filter((m) => !/💥|📉/.test(m.txt)).concat(evMoments);
+        moments.sort((a, b) => a.ts - b.ts);
+      }
     }
     if (!moments.length) { await bot.sendText(chatId, "No market story available for that match — /matches for another."); return; }
     const span = Math.max(1, moments[moments.length - 1].ts - moments[0].ts);
@@ -195,6 +310,10 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     reliveRuns.set(String(chatId), { stop: false });
     await bot.sendText(chatId,
       `🔴 <b>${meta.home} vs ${meta.away}</b> — coverage starting.\nI'll bring you the match and what the market makes of it. <i>(/stopreplay to leave)</i>`);
+    // one LLM pass turns the deterministic lines into live commentary;
+    // any failure keeps the deterministic broadcast untouched
+    const lively = await llmRewrite(meta, moments);
+    if (lively) moments = lively;
     let prevTs = moments[0].ts;
     for (const m of moments) {
       const wait = Math.min(60000, Math.max(800, (m.ts - prevTs) / factor));
@@ -203,8 +322,8 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       prevTs = m.ts;
       await bot.sendText(chatId, m.txt);
     }
-    // closing summary built strictly from the match facts
-    await bot.sendText(chatId, `🎙 ${closingSummary(meta, events)}\n\nNext match: /matches`);
+    // with real play-by-play the full-time whistle already closed the show
+    await bot.sendText(chatId, usedPbp ? "Next match: /matches" : `🎙 ${closingSummary(meta, events)}\n\nNext match: /matches`);
     reliveRuns.delete(String(chatId));
   }
 
