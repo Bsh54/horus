@@ -412,6 +412,28 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       await sendT(bot, chatId,
         `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, follow my commentary — and if you fancy it, take on the market with real on-chain SOL stakes (devnet).\n\n⚽ /matches — pick a match to watch\n👛 /wallet — your balance and bets\n⭐ /plan — your plan (${users.isPremium(chatId) ? "PREMIUM" : "FREE"})\n🌍 /language — change language\n⏹ /stopreplay — leave the current match`);
       break;
+    case "/ask": {
+      if (!arg) { await sendT(bot, chatId, "Ask me anything about the live matches: /ask who is winning?"); break; }
+      const quota = users.useAiQuestion(chatId);
+      if (!quota.ok) { await bot.sendText(chatId, await i18n.t("quota_reached", users.langOf(chatId))); break; }
+      // grounded context: every fixture with known state, score + probabilities
+      const lines = [];
+      for (const [fid, st] of scoreStates) {
+        const meta = metaOf(fid);
+        if (!meta || !st.score) continue;
+        const p = liveAgent.state.fixtures.get(fid)?.lastProbs;
+        lines.push(`${meta.home} ${st.score[0]}-${st.score[1]} ${meta.away} | ${PHASES[st.statusId] || "?"} | min ${st.minute ?? "?"}` +
+          (p ? ` | win% H ${(p.home * 100).toFixed(0)} D ${(p.draw * 100).toFixed(0)} A ${(p.away * 100).toFixed(0)}` : ""));
+      }
+      if (!lines.length) { await sendT(bot, chatId, "No live data on the feed right now — try again during a match."); break; }
+      const lang = users.langOf(chatId);
+      const answer = await horus.ask(arg, lines.slice(0, 20).join("\n"), lang, i18n.llmSpeaks(lang));
+      if (answer) {
+        const left = quota.left === Infinity ? "" : `\n\n<i>${quota.left}/${users.FREE_AI_PER_DAY}</i>`;
+        await bot.sendText(chatId, `𓂀 ${answer}${left}`);
+      } else await sendT(bot, chatId, "My analysis engine is busy — try again in a moment.");
+      break;
+    }
     case "/language":
       await bot.sendText(chatId, await i18n.t("change_language", users.langOf(chatId)), { reply_markup: i18n.languageKeyboard(0) });
       break;

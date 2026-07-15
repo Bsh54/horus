@@ -7,8 +7,9 @@ import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { gunzipSync } from "zlib";
-import { translate } from "./i18n.mjs";
-import { langOf } from "./users.mjs";
+import { translate, t as tKey } from "./i18n.mjs";
+import { langOf, isPremium } from "./users.mjs";
+import { renderCard, buildEventJob } from "./cards.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA = join(__dirname, "data");
@@ -82,11 +83,49 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     if (!d.head) return;
     const text = [d.head, d.body, d.market].filter(Boolean).join("\n");
     journal({ kind: "pundit", fixtureId, event: ev.kind, text });
-    // one translation per language (cached in i18n), fanned out in parallel
+    // Stage 1 — instant text ping, one translation per language (cached)
     await Promise.all(followers.map(async (f) => {
       const out = await translate(text, langOf(f.chatId));
       return bot.sendText(f.chatId, out);
     }));
+    // Stage 2 — rich visual card for premium followers (never blocks stage 1)
+    dispatchCards(fixtureId, ev, d).catch((e) => console.log("[cards]", e.message));
+  }
+
+  // Map feed events onto card kinds; render once per (event × language) and
+  // fan the PNG out to premium followers (Telegram file_id reuse in bot).
+  const CARD_KIND = { goal: "goal", red: "red", steam: "market" };
+  async function dispatchCards(fixtureId, ev, d) {
+    let kind = CARD_KIND[ev.kind];
+    if (ev.kind === "period" && /finished|full/i.test(ev.text || "")) kind = "fulltime";
+    if (ev.kind === "period" && /1st half/i.test(ev.text || "")) kind = "kickoff";
+    if (!kind) return;
+    const premium = bot.followersOf(fixtureId).filter((f) => isPremium(f.chatId));
+    if (!premium.length) return;
+    const st = getState(fixtureId) || {};
+    const ctx = {
+      meta: d.meta, state: st,
+      probs: getProbs(fixtureId), prevProbs: probMem.get(fixtureId), odds: null,
+    };
+    const byLang = new Map();
+    for (const f of premium) {
+      const lang = langOf(f.chatId);
+      if (!byLang.has(lang)) byLang.set(lang, []);
+      byLang.get(lang).push(f.chatId);
+    }
+    for (const [lang, chatIds] of byLang) {
+      const texts = {};
+      for (const k of ["goal", "red_card", "yellow_card", "corner", "win_probability", "fulltime", "kickoff", "odds_moved"])
+        texts[k] = (await tKey(k, lang)).toUpperCase();
+      const quoteText = await translate([d.body, d.market].filter(Boolean).join(" ").replace(/<[^>]+>/g, ""), lang);
+      const job = buildEventJob({ ...ev, kind, quote: quoteText ? { author: "HORUS", text: quoteText } : null }, { ...ctx, texts });
+      if (!job) continue;
+      const cacheKey = `${fixtureId}-${kind}-${(st.score || []).join("")}-${st.minute ?? "x"}-${lang}`;
+      try {
+        const png = await renderCard(cacheKey, job);
+        await Promise.all(chatIds.map((cid) => bot.sendPhoto(cid, png)));
+      } catch (e) { console.log("[cards] render failed:", e.message); }
+    }
   }
 
   // called after each odds tick so "before" is the pre-event picture
@@ -208,6 +247,36 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
         const line = esc(arr[i]).trim();
         return { ...m, txt: m.big || /^⏱|^🏁/.test(m.txt) ? `<b>${line}</b>` : line };
       });
+    } catch { return null; }
+  }
+
+  // One-shot grounded Q&A: answers ONLY from the live context we hand it.
+  // If DeepSeek is fluent in the fan's language it answers directly;
+  // otherwise it answers in English and we translate.
+  async function ask(question, context, lang = "en", speaks = true) {
+    if (!existsSync(LLM_FILE)) return null;
+    const cfg = JSON.parse(readFileSync(LLM_FILE, "utf8"));
+    const answerLang = speaks ? lang : "en";
+    try {
+      const r = await fetch("https://api.deepseek.com/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${cfg.key}` },
+        body: JSON.stringify({
+          model: cfg.model || "deepseek-chat",
+          thinking: { type: "disabled" },
+          temperature: 0.7, max_tokens: 400,
+          messages: [
+            { role: "system", content: `You are HORUS, a sharp football pundit. Answer the fan's question using ONLY the live data below — never invent scores, odds or facts not present. If the data doesn't cover it, say so briefly. Max 80 words. Answer in language code "${answerLang}".\n\nLIVE DATA:\n${context}` },
+            { role: "user", content: question },
+          ],
+        }),
+        signal: AbortSignal.timeout(12000),
+      });
+      const j = await r.json();
+      let out = j.choices?.[0]?.message?.content?.trim();
+      if (!out) return null;
+      if (!speaks && lang !== "en") out = await translate(out, lang);
+      return esc(out);
     } catch { return null; }
   }
 
@@ -366,6 +435,6 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return null;
   }
 
-  return { notifyFollowers, rememberProbs, relive, preMatchOdds, finalResultOf,
+  return { notifyFollowers, rememberProbs, relive, preMatchOdds, finalResultOf, ask,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }

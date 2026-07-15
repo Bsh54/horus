@@ -38,6 +38,27 @@ export function createBot({ onCommand }) {
     return call("sendMessage", { chat_id: chatId, text: sanitize(text), parse_mode: "HTML", disable_web_page_preview: true, ...extra });
   }
 
+  // photo cards: upload once, then reuse Telegram's file_id for every other
+  // follower — one upload per rendered card, no matter the audience size
+  const fileIds = new Map(); // local path -> telegram file_id
+  async function sendPhoto(chatId, path, caption = "", extra = {}) {
+    const known = fileIds.get(path);
+    if (known) {
+      return call("sendPhoto", { chat_id: chatId, photo: known, caption: sanitize(caption), parse_mode: "HTML", ...extra });
+    }
+    try {
+      const form = new FormData();
+      form.append("chat_id", String(chatId));
+      form.append("photo", new Blob([readFileSync(path)], { type: "image/png" }), "card.png");
+      if (caption) { form.append("caption", sanitize(caption)); form.append("parse_mode", "HTML"); }
+      const r = await fetch(`${API}/sendPhoto`, { method: "POST", body: form });
+      const body = await r.json();
+      const fid = body.result?.photo?.at(-1)?.file_id;
+      if (fid) fileIds.set(path, fid);
+      return body;
+    } catch (e) { return { ok: false, description: e.message }; }
+  }
+
   // update an existing bubble in place (paginated lists, menus)
   async function editText(chatId, messageId, text, extra = {}) {
     return call("editMessageText", { chat_id: chatId, message_id: messageId, text: sanitize(text), parse_mode: "HTML", disable_web_page_preview: true, ...extra });
@@ -69,7 +90,7 @@ export function createBot({ onCommand }) {
   })();
 
   const api = {
-    sendText, editText, call,
+    sendText, editText, sendPhoto, call,
     subs,
     subscribe(chatId, target, name) {
       const s = subs.get(String(chatId)) || { follows: [], name };
