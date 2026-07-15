@@ -1,0 +1,10 @@
+import { readFileSync, readdirSync } from "fs";
+import { gunzipSync } from "zlib";
+const files = readdirSync("data/history").filter((x) => x.startsWith("pbp-"));
+console.log(files.length, "pbp archives");
+const d = JSON.parse(gunzipSync(readFileSync("data/history/" + files[0])));
+console.log(d.home, "vs", d.away, "-", d.plays.length, "plays kept");
+const types = {};
+for (const p of d.plays) types[p.type] = (types[p.type] || 0) + 1;
+console.log(types);
+for (const p of d.plays.slice(15, 30)) console.log(`${p.min}' ${p.type} | ${p.text.slice(0, 90)}`);

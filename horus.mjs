@@ -327,6 +327,41 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     reliveRuns.delete(String(chatId));
   }
 
-  return { notifyFollowers, rememberProbs, relive,
+  // pre-match decimal odds from the first archived TxLINE tick (prices are ×1000)
+  function preMatchOdds(fixtureId) {
+    const ticks = loadTicksFor(fixtureId);
+    if (!ticks || !ticks.length) return null;
+    const t = ticks.find((x) => !x.ir) || ticks[0];
+    if (!t.p || t.p.length !== 3 || !t.p.every((v) => Number.isFinite(v) && v > 1000)) return null;
+    return { home: +(t.p[0] / 1000).toFixed(2), draw: +(t.p[1] / 1000).toFixed(2), away: +(t.p[2] / 1000).toFixed(2) };
+  }
+
+  // 1X2 result of the archived match: 0 home, 1 draw, 2 away, null if unknown
+  const normName = (s) => String(s || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z ]/g, "").trim();
+  function finalResultOf(fixtureId, meta) {
+    const pbp = loadPbp(fixtureId);
+    if (pbp && pbp.plays && pbp.plays.length) {
+      const goals = pbp.plays.filter(isGoalPlay);
+      if (!goals.length) return 1; // goalless: the 1X2 market settles as a draw
+      const m = goals[goals.length - 1].text.match(/([A-Za-z' .&-]+?)\s+(\d+),\s*([A-Za-z' .&-]+?)\s+(\d+)/);
+      if (m) {
+        let h = +m[2], a = +m[4];
+        const first = normName(m[1].replace(/^goal!?\s*/i, ""));
+        const homeN = normName(meta?.home);
+        if (homeN && first && !(first.includes(homeN) || homeN.includes(first))) [h, a] = [a, h];
+        return h > a ? 0 : h < a ? 2 : 1;
+      }
+    }
+    const ticks = loadTicksFor(fixtureId);
+    if (ticks && ticks.length) {
+      const p = probOf(ticks[ticks.length - 1]);
+      if (p.home > 0.8) return 0;
+      if (p.away > 0.8) return 2;
+      if (p.draw > 0.8) return 1;
+    }
+    return null;
+  }
+
+  return { notifyFollowers, rememberProbs, relive, preMatchOdds, finalResultOf,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }

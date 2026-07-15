@@ -14,6 +14,7 @@ import { TxLive } from "./txline-live.mjs";
 import { createAgent, DEFAULT_CONFIG as AGENT_DEFAULTS } from "./agent.mjs";
 import { createBot } from "./bot.mjs";
 import { createHorus } from "./horus.mjs";
+import { createBank } from "./bank.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 8088;
@@ -339,7 +340,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
   switch ((cmd || "").toLowerCase()) {
     case "/start":
       await bot.sendText(chatId,
-        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, pick your pace, and follow it with my commentary.\n\n⚽ /matches — pick a match to watch\n⏹ /stopreplay — leave the current match`);
+        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, pick your pace, follow my commentary — and if you fancy it, take on the market with real on-chain SOL stakes (devnet).\n\n⚽ /matches — pick a match to watch\n👛 /wallet — your balance and bets\n⏹ /stopreplay — leave the current match`);
       break;
     case "/matches": {
       const rows = listMatches();
@@ -384,6 +385,18 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       horus.stopReplay(chatId);
       await bot.sendText(chatId, "⏹ Coverage stopped. /matches to pick another.");
       break;
+    case "/wallet": {
+      if (!bank) { await bot.sendText(chatId, "The bank is offline right now."); break; }
+      try {
+        const w = await bank.balanceOf(chatId);
+        const mine = bank.betsOf(chatId);
+        const lines = mine.slice(-5).map((b) =>
+          `${b.settled ? (b.won ? "✅" : "❌") : "⏳"} ${b.sideName} @ ${b.odds} — ${b.stake} SOL${b.won && b.payout ? ` → ${b.payout} SOL` : ""}`);
+        await bot.sendText(chatId,
+          `👛 <b>Your wallet</b> (Solana devnet)\n<code>${w.pub}</code>\nBalance: <b>${w.sol.toFixed(4)} SOL</b>${lines.length ? "\n\n<b>Bets</b>\n" + lines.join("\n") : "\n\nNo bets yet — pick a match and take on the market."}`);
+      } catch (e) { console.log("[bank] wallet failed:", e.message); await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment."); }
+      break;
+    }
     default:
       if (text.startsWith("pick:")) { // match tapped in the list
         await sendSpeedChoice(bot, chatId, Number(text.split(":")[1]));
@@ -399,7 +412,46 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         const [, fid, sec] = text.split(":");
         horus.stopReplay(chatId);
         const events = await scoreEventsFor(Number(fid)).catch(() => []);
-        horus.relive(chatId, Number(fid), metaOf(fid) || { home: "Home", away: "Away" }, Number(sec), events);
+        const meta = metaOf(fid) || { home: "Home", away: "Away" };
+        const run = horus.relive(chatId, Number(fid), meta, Number(sec), events);
+        if (bank) {
+          const odds = horus.preMatchOdds(Number(fid));
+          if (odds && !bank.hasOpenBet(chatId, fid)) {
+            await bot.sendText(chatId,
+              `🎲 <b>Take on the market?</b> Pre-match odds, straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet) — settled on-chain at the final whistle.`,
+              { reply_markup: { inline_keyboard: [[
+                { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${fid}:0` },
+                { text: `Draw @ ${odds.draw}`, callback_data: `bet:${fid}:1` },
+                { text: `${meta.away} @ ${odds.away}`, callback_data: `bet:${fid}:2` },
+              ]] } });
+          }
+          run.then(async () => {
+            if (!bank.openBetsFor(fid).length) return;
+            const res = horus.finalResultOf(Number(fid), meta);
+            if (res == null) return;
+            await bank.settle(fid, res, (cid, txt) => bot.sendText(cid, txt));
+          }).catch((e) => console.log("[bank] settle error:", e.message));
+        }
+        break;
+      }
+      if (text.startsWith("bet:")) { // side tapped on the betting keyboard
+        const [, fid, side] = text.split(":");
+        if (!bank) { await bot.sendText(chatId, "The bank is offline right now."); break; }
+        if (bank.hasOpenBet(chatId, fid)) { await bot.sendText(chatId, "You already have a position on this match — one bet per match."); break; }
+        const meta = metaOf(fid) || { home: "Home", away: "Away" };
+        const odds = horus.preMatchOdds(Number(fid));
+        if (!odds) { await bot.sendText(chatId, "No odds available for this match."); break; }
+        const sideName = [meta.home, "Draw", meta.away][+side];
+        const taken = [odds.home, odds.draw, odds.away][+side];
+        await bot.sendText(chatId, "⏳ Placing your stake on-chain…");
+        try {
+          const betRec = await bank.placeBet(chatId, fid, +side, sideName, taken);
+          await bot.sendText(chatId,
+            `🎟 <b>Position taken: ${sideName} @ ${taken}</b>\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\nSettlement lands in your wallet at the final whistle. /wallet to check it.`);
+        } catch (e) {
+          console.log("[bank] bet failed:", e.message);
+          await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment.");
+        }
         break;
       }
       if (text.startsWith("/")) await bot.sendText(chatId, "Unknown command — /start shows what I can do.");
@@ -415,6 +467,11 @@ horus = createHorus({
   getProbs: (id) => liveAgent.state.fixtures.get(id)?.lastProbs || null,
   getState: (id) => scoreStates.get(id) || null,
 });
+
+// devnet-SOL betting bank; the bot degrades gracefully if it can't start
+let bank = null;
+try { bank = createBank({ journal: (r) => journalAppend({ ...r, source: "bank" }) }); console.log("[bank] ready"); }
+catch (e) { console.log("[bank] disabled:", e.message); }
 
 // ---------------------------------------------------------------------------
 // 3. RULE-BASED AGENT ("le trader") — paper-trading book.
