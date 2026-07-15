@@ -445,49 +445,114 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     } catch (e) { console.log("[cards] replay render failed:", e.message); return false; }
   }
 
+  // One event of a PERSONAL playback session: instant text ping, then the
+  // visual card — both to a single chat, in the fan's language.
+  async function personalEvent(chatId, fixtureId, meta, ev, { st, probs, prevProbs }) {
+    const lang = langOf(chatId);
+    const score = `${st.score[0]}-${st.score[1]}`;
+    const min = st.minute != null ? `${st.minute}'` : "";
+    let head = "";
+    if (ev.kind === "goal") head = `⚽ GOAL — ${ev.isHome ? meta.home : meta.away}! ${meta.home} ${score} ${meta.away} (${min})`;
+    else if (ev.kind === "red") head = `🟥 RED CARD — ${ev.isHome ? meta.home : meta.away} (${min}), ${score}`;
+    else if (ev.kind === "period") head = `⏱ ${ev.text} — ${meta.home} ${score} ${meta.away}`;
+    if (!head) return;
+    await bot.sendText(chatId, await translate(head, lang));
+    let kind = ev.kind === "goal" ? "goal" : ev.kind === "red" ? "red" : null;
+    if (ev.kind === "period" && /full time|finished/i.test(ev.text || "")) kind = "fulltime";
+    else if (ev.kind === "period" && /1st half/i.test(ev.text || "")) kind = "kickoff";
+    else if (ev.kind === "period") kind = "phase";
+    if (!kind) return;
+    const evx = { ...ev, kind };
+    if (kind === "goal" || kind === "red") {
+      const p = playerFromPbp(fixtureId, kind, st.score);
+      if (p) evx.player = p;
+    }
+    if (kind === "phase") evx.text = await translate(ev.text, lang);
+    const texts = {};
+    for (const k of ["goal", "red_card", "corner", "win_probability", "fulltime", "kickoff", "corners", "cards"])
+      texts[k] = (await tKey(k, lang)).toUpperCase();
+    const q = quoteFor(kind, {
+      fixtureId, team: ev.isHome ? meta.home : meta.away, player: evx.player?.name,
+      minute: st.minute, score,
+      prob: probs ? Math.round((ev.isHome ? probs.home : probs.away) * 100) + "%" : null,
+      fav: probs ? (probs.home >= probs.away ? meta.home : meta.away) : "",
+      remaining: st.minute != null ? Math.max(0, 90 - st.minute) : null,
+    });
+    const job = buildEventJob(
+      { ...evx, quote: { author: q.author, text: await translate(q.text, lang) } },
+      { meta, state: st, probs, prevProbs, odds: null, texts });
+    if (!job) return;
+    try {
+      const png = await renderCard(`ps-${fixtureId}-${kind}-${st.score.join("")}-${st.minute ?? "x"}-${lang}`, job);
+      await bot.sendPhoto(chatId, png);
+    } catch (e) { console.log("[cards] personal render failed:", e.message); }
+  }
+
   // Finished match: one recap card + one line-by-line story of the match.
   // No pacing, no betting — the fan taps and gets the whole picture at once.
   async function recap(chatId, fixtureId, meta) {
     const lang = langOf(chatId);
     const st = getState(fixtureId) || {};
-    // --- the story, from the play-by-play archive ---
     const pbp = loadPbp(fixtureId);
+    const who = (t, mid) => String(t).match(mid ? /(?:\d\.\s+|^)([\p{Lu}][\p{L}'.’-]+(?: [\p{Lu}][\p{L}'.’-]+){0,3}) \(/u : /^([\p{Lu}][\p{L}'.’-]+(?: [\p{Lu}][\p{L}'.’-]+){0,3}) \(/u)?.[1];
+    const homeSide = (t) => {
+      const team = String(t).match(/\(([^)]+)\)/)?.[1];
+      return team != null && String(meta.home).toLowerCase().includes(team.toLowerCase().split(" ")[0]);
+    };
+    // --- key moments + full stat counters, from the play-by-play archive ---
     const lines = [];
+    const tally = { corners: [0, 0], fouls: [0, 0], shotsOn: [0, 0], shotsOff: [0, 0], offsides: [0, 0], yellows: [0, 0], saves: [0, 0] };
+    const bump = (key, t) => tally[key][homeSide(t) ? 0 : 1]++;
     if (pbp?.plays) {
       for (const p of pbp.plays) {
         const min = p.min != null ? `${p.min}'` : "–";
-        if (p.goal || /^(Goal|Own Goal|Penalty - Scored)/.test(p.type || "")) {
+        const ty = p.type || "";
+        if (p.goal || /^(Goal|Own Goal|Penalty - Scored)/.test(ty)) {
           const sc = String(p.text).match(/ (\d+)(?:\(\d+\))?, .*? (\d+)(?:\(\d+\))?\./);
-          const who = String(p.text).match(/(?:\d\.\s+|^)([\p{Lu}][\p{L}'.’-]+(?: [\p{Lu}][\p{L}'.’-]+){0,3}) \(/u)?.[1];
-          const og = /Own Goal/.test(p.type) ? " (og)" : /Penalty/.test(p.type) ? " (pen)" : "";
-          lines.push(`${min}  ⚽ ${who || "Goal"}${og}${sc ? ` — ${sc[1]}-${sc[2]}` : ""}`);
-        } else if (/Red Card|Second Yellow/i.test(p.type || "")) {
-          const who = String(p.text).match(/^([\p{Lu}][\p{L}'.’-]+(?: [\p{Lu}][\p{L}'.’-]+){0,3}) \(/u)?.[1];
-          lines.push(`${min}  🟥 ${who || "Red card"}`);
-        } else if (/Penalty - (Missed|Saved)/.test(p.type || "")) {
-          lines.push(`${min}  ✗ Penalty ${/Saved/.test(p.type) ? "saved" : "missed"}`);
-        } else if (p.type === "Halftime") lines.push(`${min}  — Half-time`);
-        else if (p.type === "Start Extra Time") lines.push(`${min}  — Extra time`);
-        else if (p.type === "End Regular Time") lines.push(`${min}  — Full time`);
+          const og = /Own Goal/.test(ty) ? " (og)" : /Penalty/.test(ty) ? " (pen)" : "";
+          lines.push(`${min}  ⚽ ${who(p.text, true) || "Goal"}${og}${sc ? ` — ${sc[1]}-${sc[2]}` : ""}`);
+        } else if (/Red Card|Second Yellow/i.test(ty)) lines.push(`${min}  🟥 ${who(p.text) || "Red card"}`);
+        else if (ty === "Yellow Card") { bump("yellows", p.text); lines.push(`${min}  🟨 ${who(p.text) || "Yellow card"}`); }
+        else if (/Penalty - (Missed|Saved)/.test(ty)) lines.push(`${min}  ✗ Penalty ${/Saved/.test(ty) ? "saved" : "missed"}`);
+        else if (ty === "Halftime") lines.push(`${min}  ⏱ Half-time`);
+        else if (ty === "Start Extra Time") lines.push(`${min}  ⏱ Extra time`);
+        else if (ty === "End Regular Time") lines.push(`${min}  🏁 Full time`);
+        else if (ty === "Corner Awarded") bump("corners", p.text);
+        else if (ty === "Foul") bump("fouls", p.text);
+        else if (ty === "Shot On Target") bump("shotsOn", p.text);
+        else if (ty === "Shot Off Target" || ty === "Shot Blocked") bump("shotsOff", p.text);
+        else if (ty === "Offside") bump("offsides", p.text);
+        else if (ty === "Save") bump("saves", p.text);
       }
     }
     const score = st.score ? `${st.score[0]}-${st.score[1]}` : "";
-    const header = `<b>${meta.home} ${score} ${meta.away}</b>`;
-    const story = lines.length ? lines.join("\n") : await translate("Full data for this match is in the card below.", lang);
-    // --- the recap card (same renderer as live full-time) ---
+    const fmt = (a) => `${a[0]} - ${a[1]}`;
+    const statBlock = [
+      `${await translate("Shots on target", lang)}: ${fmt(tally.shotsOn)}`,
+      `${await translate("Shots off target", lang)}: ${fmt(tally.shotsOff)}`,
+      `${await translate("Saves", lang)}: ${fmt(tally.saves)}`,
+      `${await translate("Corners", lang)}: ${fmt(tally.corners)}`,
+      `${await translate("Fouls", lang)}: ${fmt(tally.fouls)}`,
+      `${await translate("Offsides", lang)}: ${fmt(tally.offsides)}`,
+      `${await translate("Yellow cards", lang)}: ${fmt(tally.yellows)}`,
+    ].join("\n");
+    const caption =
+      `<b>${meta.home} ${score} ${meta.away}</b>\n\n` +
+      (lines.length ? lines.join("\n\n") + "\n\n" : "") +
+      `<b>${await translate("Match stats", lang)}</b>\n${statBlock}`;
+    // --- the recap card: score + stat boxes, nothing else ---
     try {
       const texts = {};
-      for (const k of ["fulltime", "corners", "cards", "win_probability"]) texts[k] = (await tKey(k, lang)).toUpperCase();
-      const q = quoteFor("fulltime", { fixtureId, score, minute: 90 });
-      const job = buildEventJob(
-        { kind: "fulltime", verified: st.seq ? `VERIFIED — TxLINE proof on Solana · seq ${st.seq}` : null,
-          quote: { author: q.author, text: await translate(q.text, lang) } },
-        { meta, state: st, probs: null, prevProbs: null, odds: null, texts });
+      for (const k of ["fulltime", "corners", "cards"]) texts[k] = (await tKey(k, lang)).toUpperCase();
+      const job = buildEventJob({ kind: "fulltime" }, { meta, state: st, probs: null, prevProbs: null, odds: null, texts });
       const png = await renderCard(`recap-${fixtureId}-${score}-${lang}`, job);
-      await bot.sendPhoto(chatId, png, `${header}\n\n${await translate("The story of the match:", lang)}\n${story}`);
+      // Telegram photo captions cap at 1024 chars — long stories go as text
+      if (caption.length <= 1000) { await bot.sendPhoto(chatId, png, caption); return; }
+      await bot.sendPhoto(chatId, png);
+      await bot.sendText(chatId, caption);
       return;
     } catch (e) { console.log("[cards] recap render failed:", e.message); }
-    await bot.sendText(chatId, `${header}\n\n${story}`);
+    await bot.sendText(chatId, caption);
   }
 
   const reliveRuns = new Map(); // chatId -> abort flag
@@ -574,6 +639,6 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return null;
   }
 
-  return { notifyFollowers, rememberProbs, relive, recap, preMatchOdds, finalResultOf, ask,
+  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, preMatchOdds, finalResultOf, ask,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }

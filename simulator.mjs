@@ -99,23 +99,25 @@ export class TxSim extends TxLive {
       });
       this.matches.set(cfg.id, { cfg, msgs, cursor: 0, zero, offsetMs, startsInMs });
     }
-    this.onStatus({ state: "sim_started", fixtures: this.matches.size, speed: this.speed });
+    this.onStatus({ state: "sim_started", fixtures: this.matches.size });
 
-    // Backlog replay: establish current state silently (no fan notifications).
-    for (const m of this.matches.values()) this.drain(m, this.horizon(m), true);
-
-    // Scheduled emission: one 250ms tick drives all matches.
-    this.timer = setInterval(() => {
-      for (const m of this.matches.values()) this.drain(m, this.horizon(m), false);
-    }, 250);
+    // FROZEN WORLD: drain every match to its anchor once (silently), then
+    // stop. Live matches stay at their anchor minute forever; a fan who opens
+    // one gets a personal playback session from that exact point (server-side).
+    for (const m of this.matches.values()) this.drain(m, this.anchor(m), true);
   }
 
-  // How far into each match's own timeline (ms relative to its zero) we are now.
-  horizon(m) {
-    const elapsed = (Date.now() - this.simStart) * this.speed;
+  // Anchor point of each match in its own timeline (ms relative to zero).
+  anchor(m) {
     if (m.cfg.phase === "finished") return Infinity;
-    if (m.cfg.phase === "upcoming") return elapsed - m.startsInMs; // negative until kickoff
-    return m.offsetMs + elapsed; // live
+    if (m.cfg.phase === "upcoming") return -1; // pre-match only
+    return m.offsetMs; // live: frozen mid-match
+  }
+
+  // Personal playback source: everything after the anchor, plus where to start.
+  timelineOf(fixtureId) {
+    const m = this.matches.get(Number(fixtureId));
+    return m ? { msgs: m.msgs, cursor: m.cursor, zero: m.zero } : null;
   }
 
   // Emit every message whose relative time <= horizon. During catchup the
@@ -135,29 +137,11 @@ export class TxSim extends TxLive {
 
   stop() {
     this.running = false;
-    if (this.timer) clearInterval(this.timer);
     this.onStatus({ state: "stopped" });
   }
 
-  // Demo phase for menus (live/upcoming/finished as of *simulated* now).
-  phaseOf(fixtureId) { return this.matches.get(fixtureId)?.cfg.phase || null; }
-
-  // Demo clock control: change speed without jumping the timeline — the
-  // elapsed simulated time is preserved by rebasing simStart.
-  setSpeed(newSpeed) {
-    newSpeed = Math.min(20, Math.max(1, Number(newSpeed) || 1));
-    const scaled = (Date.now() - this.simStart) * this.speed;
-    this.speed = newSpeed;
-    this.simStart = Date.now() - scaled / newSpeed;
-    // upcoming kick-off wall-clock times shift with the new speed
-    for (const [id, m] of this.matches) {
-      if (m.cfg.phase !== "upcoming") continue;
-      const meta = this.meta.get(id);
-      if (meta) meta.startTime = new Date(Date.now() + Math.max(0, m.startsInMs - scaled) / newSpeed).toISOString();
-    }
-    this.onStatus({ state: "sim_speed", speed: newSpeed });
-    return newSpeed;
-  }
+  // Static section of each match — the frozen world never reclassifies.
+  phaseOf(fixtureId) { return this.matches.get(Number(fixtureId))?.cfg.phase || null; }
 }
 
 // Propagate the catchup flag through TxLive's normalised events.

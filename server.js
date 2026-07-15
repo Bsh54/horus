@@ -404,6 +404,86 @@ async function sendT(bot, chatId, text, extra = {}) {
   return bot.sendText(chatId, await i18n.translate(text, users.langOf(chatId)), extra);
 }
 
+// ---------------------------------------------------------------------------
+// PERSONAL PLAYBACK — the frozen world executes on demand, per fan.
+// Opening a live/upcoming match starts a private session from its anchor:
+// the authentic TxLINE messages stream forward at the fan's own speed,
+// producing pings and cards for that chat only.
+// ---------------------------------------------------------------------------
+const playbacks = new Map(); // chatId -> { stop, speed }
+
+function stopSession(chatId) {
+  const s = playbacks.get(String(chatId));
+  if (s) s.stop = true;
+  playbacks.delete(String(chatId));
+}
+
+function sessionControls(speed) {
+  const mark = (n) => (speed === n ? `· x${n} ·` : `x${n}`);
+  return { inline_keyboard: [[
+    { text: mark(1), callback_data: "spd:1" },
+    { text: mark(5), callback_data: "spd:5" },
+    { text: mark(10), callback_data: "spd:10" },
+    { text: "⏹", callback_data: "spd:stop" },
+  ]] };
+}
+
+async function runSession(bot, chatId, fid, speed = 5) {
+  stopSession(chatId);
+  const tl = sim ? sim.timelineOf(Number(fid)) : null;
+  if (!tl) { await sendT(bot, chatId, "No playback data for this match."); return; }
+  const sess = { stop: false, speed };
+  playbacks.set(String(chatId), sess);
+  const meta = metaOf(fid) || { home: "Home", away: "Away" };
+  await sendT(bot, chatId, `<b>${meta.home} vs ${meta.away} — you're watching.</b>\nYour own pace; nobody else is affected.`,
+    { reply_markup: sessionControls(speed) });
+  // personal state cloned from the frozen anchor
+  const st = JSON.parse(JSON.stringify(scoreStates.get(Number(fid)) || blankMatchState()));
+  let probs = null, prevProbs = null, prevTs = null;
+  for (let i = tl.cursor; i < tl.msgs.length; i++) {
+    const { ts, stream, msg } = tl.msgs[i];
+    if (prevTs != null) {
+      const wait = Math.min(20000, Math.max(0, (ts - prevTs) / sess.speed));
+      if (wait > 30) await new Promise((r) => setTimeout(r, wait));
+    }
+    prevTs = ts;
+    if (sess.stop) return;
+    if (stream === "odds") {
+      if (msg.SuperOddsType === "1X2_PARTICIPANT_RESULT" && !msg.MarketPeriod && Array.isArray(msg.Pct) && msg.Pct.length === 3) {
+        const p = msg.Pct.map(Number), s = p[0] + p[1] + p[2];
+        if (s > 0) { prevProbs = probs; probs = { home: p[0] / s, draw: p[1] / s, away: p[2] / s }; }
+      }
+      continue;
+    }
+    const prev = { score: [...st.score], red: [...st.red], statusId: st.statusId };
+    if (msg.Clock?.Seconds != null) st.minute = Math.floor(msg.Clock.Seconds / 60);
+    if (msg.StatusId != null) st.statusId = msg.StatusId;
+    if (msg.Seq) st.seq = msg.Seq;
+    if (msg.Stats) {
+      const d = decodeTxStats(msg.Stats);
+      st.score = d.score; st.yellow = d.yellow; st.red = d.red; st.corners = d.corners;
+    }
+    const evs = [];
+    if (st.score[0] > prev.score[0]) evs.push({ kind: "goal", isHome: true });
+    if (st.score[1] > prev.score[1]) evs.push({ kind: "goal", isHome: false });
+    if (st.red[0] > prev.red[0]) evs.push({ kind: "red", isHome: true });
+    if (st.red[1] > prev.red[1]) evs.push({ kind: "red", isHome: false });
+    if (st.statusId !== prev.statusId && PHASES[st.statusId]) evs.push({ kind: "period", text: PHASES[st.statusId] });
+    for (const ev of evs) {
+      await horus.personalEvent(chatId, Number(fid), meta, ev, { st, probs, prevProbs }).catch((e) => console.log("[session]", e.message));
+      if (sess.stop) return;
+    }
+    if (isFinalStatus(st.statusId)) break;
+  }
+  playbacks.delete(String(chatId));
+  // settle this fan's position at their own final whistle
+  if (bank && bank.hasOpenBet(chatId, fid)) {
+    const [h, a] = st.score;
+    await bank.settle(fid, h > a ? 0 : a > h ? 2 : 1, (cid, txt) => bot.sendText(cid, txt))
+      .catch((e) => console.log("[bank] settle error:", e.message));
+  }
+}
+
 
 async function sendPlanPortal(bot, chatId) {
   const lang = users.langOf(chatId);
@@ -621,36 +701,37 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
           await horus.recap(chatId, Number(id), metaOf(id) || { home: "Home", away: "Away" });
           break;
         }
-        bot.subscribe(chatId, id, name);
         const meta = metaOf(id) || { home: "Home", away: "Away" };
         const odds = (sim && sim.oddsFor(Number(id))) || (live && live.oddsFor(Number(id))) || null;
-        if (realPhase === "live") {
-          await sendT(bot, chatId, `<b>Following ${matchLabel(id)}.</b>\nGoals, cards and market moves as they happen.`);
-          await bot.sendText(chatId, liveContextFor(Number(id)));
-        } else {
-          const when = meta.startTime ? new Date(meta.startTime).toISOString().slice(11, 16) + " UTC" : "soon";
-          await sendT(bot, chatId,
-            `<b>Following ${matchLabel(id)}.</b>\nKick-off ${when}.\n<i>You'll hear from me the moment it starts.</i>`);
-        }
-        // live or upcoming: offer a position while the market is open
+        if (realPhase === "live") await bot.sendText(chatId, liveContextFor(Number(id)));
         if (bank && odds && !bank.hasOpenBet(chatId, id)) {
           await sendT(bot, chatId,
-            `<b>Take a position?</b>\n\n` +
-            `Odds straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet), settled on-chain at the final whistle.`,
+            `<b>Take a position before you watch?</b>\n\n` +
+            `Odds straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet), settled at your final whistle.`,
             { reply_markup: { inline_keyboard: [[
               { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${id}:0` },
               { text: `Draw @ ${odds.draw}`, callback_data: `bet:${id}:1` },
               { text: `${meta.away} @ ${odds.away}`, callback_data: `bet:${id}:2` },
+            ], [
+              { text: "▶ Watch", callback_data: `watch:${id}` },
             ]] } });
+        } else {
+          await runSession(bot, chatId, id);
         }
         break;
       }
       if (text === "noop") break;
-      if (text.startsWith("clock:")) { // demo clock speed (shared by design)
-        const sp = sim ? sim.setSpeed(Number(text.split(":")[1])) : 1;
-        await sendT(bot, chatId, sp === 1
-          ? `<b>Match clock: real time.</b>`
-          : `<b>Match clock: x${sp}.</b>\nThe whole championship now runs ${sp} times faster — goals arrive in minutes, not halves.`);
+      if (text.startsWith("watch:")) { // skip the bet — start the personal playback
+        await runSession(bot, chatId, Number(text.split(":")[1]));
+        break;
+      }
+      if (text.startsWith("spd:")) { // personal playback controls
+        const v = text.split(":")[1];
+        const sess = playbacks.get(String(chatId));
+        if (!sess) { await sendT(bot, chatId, "No match playing — /matches to open one."); break; }
+        if (v === "stop") { stopSession(chatId); await sendT(bot, chatId, "Stopped. /matches when you want back in."); break; }
+        sess.speed = Math.min(20, Math.max(1, Number(v) || 5));
+        if (isCallback) await bot.call("editMessageReplyMarkup", { chat_id: chatId, message_id: msgId, reply_markup: sessionControls(sess.speed) });
         break;
       }
       if (text.startsWith("bet:")) { // side tapped on the betting keyboard
@@ -668,6 +749,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
           await bot.sendText(chatId, betRec.txSig
             ? `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\n<i>Settlement lands in your wallet at the final whistle.</i>`
             : `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL — the devnet faucet is dry, so the on-chain transfer is deferred.\n<i>Settlement at the final whistle.</i>`);
+          if (isDemoFixture(fid)) await runSession(bot, chatId, Number(fid)); // position taken — the match starts for them
         } catch (e) {
           console.log("[bank] bet failed:", e.message);
           await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment.");
