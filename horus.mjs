@@ -7,7 +7,7 @@ import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { gunzipSync } from "zlib";
-import { translate, t as tKey } from "./i18n.mjs";
+import { translate, t as tKey, term } from "./i18n.mjs";
 import { langOf, isPremium } from "./users.mjs";
 import { renderCard, buildEventJob, playerPhoto } from "./cards.mjs";
 import { quoteFor, polish } from "./personas.mjs";
@@ -517,14 +517,14 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
         const ty = p.type || "";
         if (GOAL_TYPES.has(ty)) {
           const sc = String(p.text).match(/ (\d+)(?:\(\d+\))?, .*? (\d+)(?:\(\d+\))?\./);
-          const og = ty === "Own Goal" ? " (og)" : ty === "Penalty - Scored" ? " (pen)" : "";
-          lines.push(`${min}  ⚽ ${who(p.text, true) || "Goal"}${og}${sc ? ` — ${sc[1]}-${sc[2]}` : ""}`);
-        } else if (/Red Card|Second Yellow/i.test(ty)) lines.push(`${min}  🟥 ${who(p.text) || "Red card"}`);
-        else if (ty === "Yellow Card") lines.push(`${min}  🟨 ${who(p.text) || "Yellow card"}`);
-        else if (/Penalty - (Missed|Saved)/.test(ty)) lines.push(`${min}  ✗ Penalty ${/Saved/.test(ty) ? "saved" : "missed"}`);
-        else if (ty === "Halftime") lines.push(`${min}  ⏱ Half-time`);
-        else if (ty === "Start Extra Time") lines.push(`${min}  ⏱ Extra time`);
-        else if (ty === "End Regular Time") lines.push(`${min}  🏁 Full time`);
+          const og = ty === "Own Goal" ? ` (${term("own_goal", lang)})` : ty === "Penalty - Scored" ? ` (${term("penalty", lang)})` : "";
+          lines.push(`${min}  ⚽ ${who(p.text, true) || term("goal", lang)}${og}${sc ? ` — ${sc[1]}-${sc[2]}` : ""}`);
+        } else if (/Red Card|Second Yellow/i.test(ty)) lines.push(`${min}  🟥 ${who(p.text) || term("red_cards", lang)}`);
+        else if (ty === "Yellow Card") lines.push(`${min}  🟨 ${who(p.text) || term("yellow_cards", lang)}`);
+        else if (/Penalty - (Missed|Saved)/.test(ty)) lines.push(`${min}  ✗ ${term(/Saved/.test(ty) ? "penalty_saved" : "penalty_missed", lang)}`);
+        else if (ty === "Halftime") lines.push(`${min}  ⏱ ${term("half_time", lang)}`);
+        else if (ty === "Start Extra Time") lines.push(`${min}  ⏱ ${term("extra_time", lang)}`);
+        else if (ty === "End Regular Time") lines.push(`${min}  🏁 ${term("full_time", lang)}`);
         // two foul phrasings: "Foul by X (Team)" = Team committed it;
         // "X (Team) wins a free kick" = the OTHER team committed it
         else if (ty === "Foul") {
@@ -540,24 +540,26 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     }
     const score = st.score ? `${st.score[0]}-${st.score[1]}` : "";
     const fmt = (a) => `${a[0]} - ${a[1]}`;
-    // corners & yellows come from the TxLINE stats themselves — authoritative
+    // corners & yellows come from the TxLINE stats themselves — authoritative;
+    // every label is real football vocabulary from the curated lexicon
     const statBlock = [
-      `${await translate("Shots on target", lang)}: ${fmt(tally.shotsOn)}`,
-      `${await translate("Shots off target", lang)}: ${fmt(tally.shotsOff)}`,
-      `${await translate("Goalkeeper saves", lang)}: ${fmt(tally.saves)}`,
-      ...(st.corners ? [`Corners: ${fmt(st.corners)}`] : []), // universal football term — never translated
-      `${await translate("Fouls committed", lang)}: ${fmt(tally.fouls)}`,
-      `${await translate("Offsides", lang)}: ${fmt(tally.offsides)}`,
-      ...(st.yellow ? [`${await translate("Yellow cards", lang)}: ${fmt(st.yellow)}`] : []),
+      `${term("shots_on_target", lang)}: ${fmt(tally.shotsOn)}`,
+      `${term("shots_off_target", lang)}: ${fmt(tally.shotsOff)}`,
+      `${term("saves", lang)}: ${fmt(tally.saves)}`,
+      ...(st.corners ? [`${term("corners", lang)}: ${fmt(st.corners)}`] : []),
+      `${term("fouls", lang)}: ${fmt(tally.fouls)}`,
+      `${term("offsides", lang)}: ${fmt(tally.offsides)}`,
+      ...(st.yellow ? [`${term("yellow_cards", lang)}: ${fmt(st.yellow)}`] : []),
+      ...(st.red && (st.red[0] || st.red[1]) ? [`${term("red_cards", lang)}: ${fmt(st.red)}`] : []),
     ].join("\n");
     const kickLine = kickoffTs
-      ? `${await translate("Kick-off", lang)}: ${new Date(kickoffTs).toISOString().slice(0, 16).replace("T", " ")} UTC\n\n`
+      ? `${term("kick_off", lang)}: ${new Date(kickoffTs).toISOString().slice(0, 16).replace("T", " ")} UTC\n\n`
       : "";
     const caption =
       `<b>${meta.home} ${score} ${meta.away}</b>\n` +
       kickLine +
       (lines.length ? lines.join("\n\n") + "\n\n" : "") +
-      `<b>${await translate("Match stats", lang)}</b>\n${statBlock}`;
+      `<b>${term("match_stats", lang)}</b>\n${statBlock}`;
     // --- the recap card: score + stat boxes, nothing else ---
     try {
       const texts = {};
