@@ -2,14 +2,13 @@
 TOKEN=$(python3 -c "import json;print(json.load(open('/opt/proofdesk/data/telegram.json'))['token'])")
 curl -s "https://api.telegram.org/bot$TOKEN/setMyCommands" -H 'Content-Type: application/json' -d '{
   "commands": [
-    {"command": "matches",   "description": "Pick a World Cup match to watch"},
-    {"command": "follow",    "description": "Follow a match — live alerts"},
-    {"command": "live",      "description": "Current picture of your matches"},
+    {"command": "matches",   "description": "Browse matches: live, upcoming, finished"},
+    {"command": "ask",       "description": "Ask HORUS about a live match"},
+    {"command": "verify",    "description": "Prove a score on-chain (Solana)"},
     {"command": "wallet",    "description": "Your devnet SOL balance and bets"},
-    {"command": "plan",      "description": "Your plan — upgrade to Premium"},
+    {"command": "plan",      "description": "Your plan and on-chain upgrade"},
     {"command": "language",  "description": "Change your language"},
-    {"command": "stopreplay","description": "Leave the current match"},
-    {"command": "start",     "description": "Who is HORUS + help"}
+    {"command": "help",      "description": "Guide - what HORUS can do"}
   ]
 }'
 echo

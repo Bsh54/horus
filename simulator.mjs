@@ -38,7 +38,9 @@ export const DEMO_MATCHES = [
   // us at ~60' just before the 67'/79'/83'/90' goal sequence of the comeback.
   { id: 18202701, home: "Argentina", away: "Egypt",       phase: "live", offsetMin: 15 }, // hero: 0-2 → 3-2
   { id: 18192996, home: "Mexico",    away: "England",     phase: "live", offsetMin: 30 }, // 5 goals, red card, 3 VAR
-  { id: 18187298, home: "Brazil",    away: "Norway",      phase: "live", offsetMin: 55 }, // Haaland double 79/90, pen missed
+  // Brazil-Norway coverage starts at half-time (like the hero) — offset is
+  // relative to coverage start, 5 ≈ the 50th minute of the match
+  { id: 18187298, home: "Brazil",    away: "Norway",      phase: "live", offsetMin: 5 }, // Haaland double 79/90, pen missed
   { id: 18179550, home: "Belgium",   away: "Senegal",     phase: "live", offsetMin: 15 }, // 0-2 → 3-2 in extra time
   { id: 18213979, home: "Norway",    away: "England",     phase: "live", offsetMin: 40 }, // Bellingham double, extra time
   // ---- UPCOMING at T0 ----
@@ -122,8 +124,9 @@ export class TxSim extends TxLive {
     while (m.cursor < m.msgs.length) {
       const { ts, stream, msg } = m.msgs[m.cursor];
       const rel = ts - m.zero;
-      // pre-match odds always replay immediately (rel < 0)
-      if (rel > 0 && rel > horizonMs) break;
+      // pre-match messages (rel < 0) always replay immediately; the kick-off
+      // itself (rel = 0) must wait for its scheduled horizon
+      if (rel >= 0 && rel > horizonMs) break;
       m.cursor++;
       if (stream === "odds") this.handleOdds({ ...msg, __catchup: catchup });
       else this.handleScore({ ...msg, __catchup: catchup });

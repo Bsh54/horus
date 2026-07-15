@@ -11,7 +11,7 @@ import { gzipSync, gunzipSync } from "zlib";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { TxLive } from "./txline-live.mjs";
-import { TxSim } from "./simulator.mjs";
+import { TxSim, DEMO_MATCHES } from "./simulator.mjs";
 import * as i18n from "./i18n.mjs";
 import * as users from "./users.mjs";
 import { verifySummary } from "./proofs.mjs";
@@ -208,6 +208,7 @@ let catalog = existsSync(CATALOG_FILE) ? JSON.parse(readFileSync(CATALOG_FILE, "
 const catalogById = () => new Map(catalog.map((c) => [c.id, c]));
 
 function metaOf(id) {
+  if (sim) { const m = sim.metaFor(Number(id)); if (m) return m; } // demo world first
   const c = catalogById().get(Number(id));
   if (c) return { home: c.home, away: c.away, competition: c.competition, startTime: c.startTime };
   return live ? live.metaFor(Number(id)) : null;
@@ -299,23 +300,26 @@ function liveContextFor(id) {
   return parts.join("\n");
 }
 
-// Phase of a fixture as of *now* — works identically in live and demo mode
-// because the simulator drives scoreStates through the same pipeline.
+// Phase of a fixture as of *now* — identical logic for both worlds because
+// the simulator drives scoreStates through the same pipeline.
 function phaseOfFixture(id) {
+  // roster-finished demo matches are final even if their stream ends without
+  // a game_finalised message (some TxLINE histories stop mid-status)
+  if (sim && sim.phaseOf(Number(id)) === "finished") return "finished";
   const st = scoreStates.get(Number(id));
-  if (st?.statusId === 10) return "finished";
+  if (st?.statusId === 100 || st?.statusId === 10) return "finished";
   if (st?.statusId >= 2) return "live";
   const meta = metaOf(id);
   if (meta?.startTime && new Date(meta.startTime).getTime() > Date.now()) return "upcoming";
   if (st?.statusId === 1) return "upcoming";
-  return "finished"; // archived matches with no live state are /relive material
+  return "finished";
 }
 
-// Everything the bot can offer: streamed fixtures (live/upcoming) + archives.
+// The bot shows one world: the demo championship. The real TxLINE connector
+// keeps running in the background (recordings, proofs, compliance) but the
+// hackathon feed goes dark after July 19 — the demo must stand alone.
 function allOfferedFixtures() {
-  const ids = new Set(catalog.filter((c) => hasArchive(c.id)).map((c) => c.id));
-  if (live) for (const id of live.allFixtureIds()) ids.add(Number(id));
-  return [...ids];
+  return sim ? sim.allFixtureIds().map(Number) : [];
 }
 
 const PHASE_UI = {
@@ -386,45 +390,12 @@ async function sendMatchesPage(bot, chatId, phase, page = 0, editMsgId = null) {
   else await bot.sendText(chatId, text, extra);
 }
 
-// Replay speed is a time multiplier over the real match clock.
-async function sendSpeedChoice(bot, chatId, id) {
-  const lang = users.langOf(chatId);
-  await bot.sendText(chatId, `<b>${matchLabel(id)}</b>\n${await i18n.translate("Playback speed:", lang)}`, {
-    reply_markup: { inline_keyboard: [[
-      { text: "x2", callback_data: `rl:${id}:2` },
-      { text: "x5", callback_data: `rl:${id}:5` },
-      { text: await i18n.translate("Normal", lang), callback_data: `rl:${id}:1` },
-    ]] },
-  });
-}
-
 // Send a message in the user's language: any English text is translated on
 // the fly (cached per text×lang in i18n, so hot paths cost nothing).
 async function sendT(bot, chatId, text, extra = {}) {
   return bot.sendText(chatId, await i18n.translate(text, users.langOf(chatId)), extra);
 }
 
-// Replays wait for the fan: speed is chosen, then a position (or "Kick off")
-// actually starts the match. chatId -> { fid, speed }
-const pendingReplays = new Map();
-
-async function startReplayFor(chatId, bot) {
-  const pending = pendingReplays.get(String(chatId));
-  if (!pending) return;
-  pendingReplays.delete(String(chatId));
-  const { fid, speed } = pending;
-  const meta = metaOf(fid) || { home: "Home", away: "Away" };
-  const events = await scoreEventsFor(Number(fid)).catch(() => []);
-  const run = horus.relive(chatId, Number(fid), meta, speed, events);
-  if (bank) {
-    run.then(async () => {
-      if (!bank.openBetsFor(fid).length) return;
-      const res = horus.finalResultOf(Number(fid), meta);
-      if (res == null) return;
-      await bank.settle(fid, res, (cid, txt) => punditBot.sendText(cid, txt));
-    }).catch((e) => console.log("[bank] settle error:", e.message));
-  }
-}
 
 async function sendPlanPortal(bot, chatId) {
   const lang = users.langOf(chatId);
@@ -512,8 +483,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         `/wallet — your devnet SOL balance and bets\n\n` +
         `/plan — your plan and the on-chain upgrade\n\n` +
         `/language — change language\n\n` +
-        `/stopreplay — leave the match you're watching\n\n` +
-        `<i>Pick a finished match to replay it as if live — you choose the speed (x2, x5 or normal).</i>`);
+        `<i>Live and upcoming matches: follow them and take a position before kick-off. Finished matches: tap for the recap card and the story of the match.</i>`);
       break;
     case "/ask": {
       if (!arg) { await sendT(bot, chatId, "Ask me anything about the live matches: /ask who is winning?"); break; }
@@ -589,8 +559,8 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       break;
     case "/live": {
       const subs = bot.subs.get(String(chatId));
-      const ids = subs ? (subs.follows[0] === "all" ? (live ? live.allFixtureIds() : []) : subs.follows) : [];
-      const active = ids.filter((id) => scoreStates.get(Number(id))?.statusId && scoreStates.get(Number(id)).statusId !== 10);
+      const ids = subs ? (subs.follows[0] === "all" ? allOfferedFixtures() : subs.follows) : [];
+      const active = ids.filter((id) => scoreStates.get(Number(id))?.statusId && !isFinalStatus(scoreStates.get(Number(id)).statusId));
       const shown = (active.length ? active : ids).slice(0, 5);
       if (!shown.length) { await bot.sendText(chatId, "You're not following anything yet. /matches to pick one."); break; }
       for (const id of shown) await bot.sendText(chatId, liveContextFor(Number(id)));
@@ -598,16 +568,13 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
     }
     case "/relive":
     case "/watch": {
-      const rows = chatLists.get(String(chatId)) || listMatches().map((r) => r.id);
+      // recap of a finished match by list number
+      const rows = chatLists.get(String(chatId)) || allOfferedFixtures();
       const id = rows[parseInt(arg, 10) - 1];
-      if (!id) { await botCommand({ chatId, text: "/matches", from, bot }); break; } // no number? show the tappable list
-      await sendSpeedChoice(bot, chatId, id);
+      if (!id) { await botCommand({ chatId, text: "/matches", from, bot }); break; }
+      await horus.recap(chatId, Number(id), metaOf(id) || { home: "Home", away: "Away" });
       break;
     }
-    case "/stopreplay":
-      horus.stopReplay(chatId);
-      await bot.sendText(chatId, "⏹ Coverage stopped. /matches to pick another.");
-      break;
     case "/wallet": {
       if (!bank) { await bot.sendText(chatId, "The bank is offline right now."); break; }
       try {
@@ -633,61 +600,44 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       }
       if (text.startsWith("pick:")) { // match tapped: action depends on its phase
         const [, phase, idRaw] = text.split(":");
-        const id = Number(idRaw ?? phase); // legacy pick:<id> still works
+        const id = Number(idRaw ?? phase);
         const realPhase = idRaw ? phase : phaseOfFixture(id);
-        if (realPhase === "finished" && hasArchive(id)) { await sendSpeedChoice(bot, chatId, id); break; }
+        if (realPhase === "finished") {
+          // one recap card + the line-by-line story — nothing to wait for
+          await horus.recap(chatId, Number(id), metaOf(id) || { home: "Home", away: "Away" });
+          break;
+        }
         bot.subscribe(chatId, id, name);
+        const meta = metaOf(id) || { home: "Home", away: "Away" };
+        const odds = (sim && sim.oddsFor(Number(id))) || (live && live.oddsFor(Number(id))) || null;
         if (realPhase === "live") {
           await sendT(bot, chatId, `<b>Following ${matchLabel(id)}.</b>\nGoals, cards and market moves as they happen.`);
           await bot.sendText(chatId, liveContextFor(Number(id)));
-        } else if (realPhase === "upcoming") {
-          const meta = metaOf(id) || {};
-          const odds = live ? live.oddsFor(Number(id)) : null;
+        } else {
           const when = meta.startTime ? new Date(meta.startTime).toISOString().slice(11, 16) + " UTC" : "soon";
           await sendT(bot, chatId,
-            `<b>Following ${matchLabel(id)}.</b>\nKick-off ${when}.` +
-            (odds ? ` Market: ${odds.home} · ${odds.draw} · ${odds.away}` : "") +
-            `\n<i>You'll hear from me the moment it starts.</i>`);
-        } else {
-          await sendT(bot, chatId, `<b>Following ${matchLabel(id)}.</b>`);
+            `<b>Following ${matchLabel(id)}.</b>\nKick-off ${when}.\n<i>You'll hear from me the moment it starts.</i>`);
+        }
+        // live or upcoming: offer a position while the market is open
+        if (bank && odds && !bank.hasOpenBet(chatId, id)) {
+          await sendT(bot, chatId,
+            `<b>Take a position?</b>\n\n` +
+            `Odds straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet), settled on-chain at the final whistle.`,
+            { reply_markup: { inline_keyboard: [[
+              { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${id}:0` },
+              { text: `Draw @ ${odds.draw}`, callback_data: `bet:${id}:1` },
+              { text: `${meta.away} @ ${odds.away}`, callback_data: `bet:${id}:2` },
+            ]] } });
         }
         break;
       }
       if (text === "noop") break;
-      if (text.startsWith("rl:")) { // speed chosen — offer a position BEFORE kick-off
-        const [, fid, speed] = text.split(":");
-        horus.stopReplay(chatId);
-        pendingReplays.set(String(chatId), { fid: Number(fid), speed: Number(speed) });
-        const meta = metaOf(fid) || { home: "Home", away: "Away" };
-        const odds = bank ? horus.preMatchOdds(Number(fid)) : null;
-        if (odds && !bank.hasOpenBet(chatId, fid)) {
-          await sendT(bot, chatId,
-            `<b>Take a position before kick-off?</b>\n\n` +
-            `Pre-match odds, straight from the feed.\n` +
-            `Stake ${bank.STAKE_SOL} SOL (devnet), settled on-chain at the final whistle.\n\n` +
-            `<i>Or skip straight to the match.</i>`,
-            { reply_markup: { inline_keyboard: [[
-              { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${fid}:0` },
-              { text: `Draw @ ${odds.draw}`, callback_data: `bet:${fid}:1` },
-              { text: `${meta.away} @ ${odds.away}`, callback_data: `bet:${fid}:2` },
-            ], [
-              { text: "▶ Kick off", callback_data: `go:${fid}` },
-            ]] } });
-        } else {
-          await startReplayFor(chatId, bot); // nothing to offer — straight in
-        }
-        break;
-      }
-      if (text.startsWith("go:")) { // fan skipped the bet — kick off now
-        await startReplayFor(chatId, bot);
-        break;
-      }
       if (text.startsWith("bet:")) { // side tapped on the betting keyboard
         const [, fid, side] = text.split(":");
         if (!bank) { await bot.sendText(chatId, "The bank is offline right now."); break; }
         if (bank.hasOpenBet(chatId, fid)) { await bot.sendText(chatId, "You already have a position on this match — one bet per match."); break; }
         const meta = metaOf(fid) || { home: "Home", away: "Away" };
-        const odds = horus.preMatchOdds(Number(fid));
+        const odds = (sim && sim.oddsFor(Number(fid))) || (live && live.oddsFor(Number(fid))) || horus.preMatchOdds(Number(fid));
         if (!odds) { await bot.sendText(chatId, "No odds available for this match."); break; }
         const sideName = [meta.home, "Draw", meta.away][+side];
         const taken = [odds.home, odds.draw, odds.away][+side];
@@ -696,7 +646,6 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
           const betRec = await bank.placeBet(chatId, fid, +side, sideName, taken);
           await bot.sendText(chatId,
             `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\n<i>Settlement lands in your wallet at the final whistle.</i>`);
-          await startReplayFor(chatId, bot); // position taken — now kick off
         } catch (e) {
           console.log("[bank] bet failed:", e.message);
           await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment.");
@@ -712,7 +661,7 @@ const punditBot = createBot({ onCommand: botCommand });
 horus = createHorus({
   bot: punditBot,
   journal: (r) => journalAppend({ ...r, source: "horus" }),
-  getMeta: (id) => (live ? live.metaFor(id) : null),
+  getMeta: (id) => metaOf(id),
   getProbs: (id) => liveAgent.state.fixtures.get(id)?.lastProbs || null,
   getState: (id) => scoreStates.get(id) || null,
 });
@@ -888,7 +837,8 @@ setInterval(() => {
 }, 20000);
 
 // Game-state mapping (TxLINE StatusId -> status object)
-const PHASES = { 1: "Not started", 2: "1st half", 3: "Halftime", 4: "2nd half", 5: "ET 1st", 6: "ET break", 7: "ET 2nd", 8: "Penalties", 10: "Finished", 19: "Postponed" };
+const PHASES = { 1: "Not started", 2: "1st half", 3: "Halftime", 4: "2nd half", 5: "ET 1st", 6: "ET break", 7: "ET 2nd", 8: "Penalties", 10: "Finished", 19: "Postponed", 100: "Full time" };
+const isFinalStatus = (s) => s === 10 || s === 100;
 
 // ---------------------------------------------------------------------------
 // INCIDENTS — Event-centric model: each match owns an incidents list
@@ -925,14 +875,23 @@ function liveMinute(ts) {
   return Math.max(0, Math.round((ts - liveSession.startTs) / 60000));
 }
 
-// DEMO_MODE=1 swaps the real SSE connector for the simulator (same pipeline,
-// authentic TxLINE historical data replayed as-if-live).
-const DEMO_MODE = process.env.DEMO_MODE === "1";
+// Two worlds run in parallel through the same pipeline:
+//  - real:  live TxLINE SSE streams (actual schedule)
+//  - demo:  TxSim, authentic TxLINE historical data replayed as-if-live
+// Users pick a world at onboarding (/mode to switch); fixtures are routed by id.
+let sim = null;
+const DEMO_IDS = new Set(DEMO_MATCHES.map((m) => m.id));
+const isDemoFixture = (id) => DEMO_IDS.has(Number(id));
 
-function ensureLive() {
-  if (live) return live;
-  const Connector = DEMO_MODE ? TxSim : TxLive;
-  live = new Connector({
+function ensureSim() {
+  if (sim) return sim;
+  sim = new TxSim(connectorHandlers("demo"));
+  return sim;
+}
+
+// shared callbacks for both connectors — everything downstream is identical
+function connectorHandlers(world) {
+  return {
     onStatus: (s) => broadcast({ kind: "live_status", ...s }),
     onScore: (s) => {
       const m = s.raw;
@@ -973,9 +932,12 @@ function ensureLive() {
         if (st.red[1] > prev.red[1]) horus.notifyFollowers(m.FixtureId, { kind: "red", isHome: false }).catch(() => {});
         if (st.statusId !== prev.statusId && PHASES[st.statusId]) horus.notifyFollowers(m.FixtureId, { kind: "period", text: PHASES[st.statusId] }).catch(() => {});
       }
-      if (st.statusId === 10 && prev.statusId !== 10) {
+      if (isFinalStatus(st.statusId) && !isFinalStatus(prev.statusId)) {
         const [h, a] = st.score;
         liveAgent.onFinal(m.FixtureId, { winner: h > a ? "home" : a > h ? "away" : "draw", finalScore: `${h}-${a}`, ts: tsNow });
+        // settle every open position on this match, on-chain
+        if (bank) bank.settle(m.FixtureId, h > a ? 0 : a > h ? 2 : 1, (cid, txt) => punditBot?.sendText(cid, txt))
+          .catch((e) => console.log("[bank] settle error:", e.message));
       }
       if (liveSession && m.FixtureId === liveSession.fixtureId) {
         liveSession.state = st;
@@ -989,7 +951,7 @@ function ensureLive() {
       liveAgent.onOdds({
         fixtureId: o.fixtureId, ts: o.ts || Date.now(),
         odds: { home: o.home, draw: o.draw, away: o.away },
-        pct: o.pct, inRunning: o.inRunning, meta: live ? live.metaFor(o.fixtureId) : null,
+        pct: o.pct, inRunning: o.inRunning, meta: metaOf(o.fixtureId),
       });
       if (horus) horus.rememberProbs(o.fixtureId);
       if (!liveSession || o.fixtureId !== liveSession.fixtureId) return;
@@ -1000,7 +962,12 @@ function ensureLive() {
       for (const d of decisions) broadcast({ kind: "decision", ...d });
       broadcast({ kind: "agent", agent: { bankroll: s.agent.bankroll, open: s.agent.openPositions, closed: s.agent.closedPositions } });
     },
-  });
+  };
+}
+
+function ensureLive() {
+  if (live) return live;
+  live = new TxLive(connectorHandlers("real"));
   return live;
 }
 
@@ -1279,7 +1246,9 @@ wss.on("connection", (ws) => {
 
 server.listen(PORT, () => {
   console.log(`ProofDesk listening on :${PORT}`);
-  // Live is the default state, not an option.
+  // Both worlds boot together: real TxLINE feed + the demo championship.
   ensureLive().start().then(() => console.log("TxLINE live feed: connected at boot"))
     .catch((e) => console.log("TxLINE live feed unavailable at boot:", e.message));
+  ensureSim().start().then(() => console.log("Demo championship: running"))
+    .catch((e) => console.log("Demo championship unavailable:", e.message));
 });

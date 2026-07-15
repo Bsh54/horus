@@ -445,6 +445,51 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     } catch (e) { console.log("[cards] replay render failed:", e.message); return false; }
   }
 
+  // Finished match: one recap card + one line-by-line story of the match.
+  // No pacing, no betting — the fan taps and gets the whole picture at once.
+  async function recap(chatId, fixtureId, meta) {
+    const lang = langOf(chatId);
+    const st = getState(fixtureId) || {};
+    // --- the story, from the play-by-play archive ---
+    const pbp = loadPbp(fixtureId);
+    const lines = [];
+    if (pbp?.plays) {
+      for (const p of pbp.plays) {
+        const min = p.min != null ? `${p.min}'` : "–";
+        if (p.goal || /^(Goal|Own Goal|Penalty - Scored)/.test(p.type || "")) {
+          const sc = String(p.text).match(/ (\d+)(?:\(\d+\))?, .*? (\d+)(?:\(\d+\))?\./);
+          const who = String(p.text).match(/(?:\d\.\s+|^)([\p{Lu}][\p{L}'.’-]+(?: [\p{Lu}][\p{L}'.’-]+){0,3}) \(/u)?.[1];
+          const og = /Own Goal/.test(p.type) ? " (og)" : /Penalty/.test(p.type) ? " (pen)" : "";
+          lines.push(`${min}  ⚽ ${who || "Goal"}${og}${sc ? ` — ${sc[1]}-${sc[2]}` : ""}`);
+        } else if (/Red Card|Second Yellow/i.test(p.type || "")) {
+          const who = String(p.text).match(/^([\p{Lu}][\p{L}'.’-]+(?: [\p{Lu}][\p{L}'.’-]+){0,3}) \(/u)?.[1];
+          lines.push(`${min}  🟥 ${who || "Red card"}`);
+        } else if (/Penalty - (Missed|Saved)/.test(p.type || "")) {
+          lines.push(`${min}  ✗ Penalty ${/Saved/.test(p.type) ? "saved" : "missed"}`);
+        } else if (p.type === "Halftime") lines.push(`${min}  — Half-time`);
+        else if (p.type === "Start Extra Time") lines.push(`${min}  — Extra time`);
+        else if (p.type === "End Regular Time") lines.push(`${min}  — Full time`);
+      }
+    }
+    const score = st.score ? `${st.score[0]}-${st.score[1]}` : "";
+    const header = `<b>${meta.home} ${score} ${meta.away}</b>`;
+    const story = lines.length ? lines.join("\n") : await translate("Full data for this match is in the card below.", lang);
+    // --- the recap card (same renderer as live full-time) ---
+    try {
+      const texts = {};
+      for (const k of ["fulltime", "corners", "cards", "win_probability"]) texts[k] = (await tKey(k, lang)).toUpperCase();
+      const q = quoteFor("fulltime", { fixtureId, score, minute: 90 });
+      const job = buildEventJob(
+        { kind: "fulltime", verified: st.seq ? `VERIFIED — TxLINE proof on Solana · seq ${st.seq}` : null,
+          quote: { author: q.author, text: await translate(q.text, lang) } },
+        { meta, state: st, probs: null, prevProbs: null, odds: null, texts });
+      const png = await renderCard(`recap-${fixtureId}-${score}-${lang}`, job);
+      await bot.sendPhoto(chatId, png, `${header}\n\n${await translate("The story of the match:", lang)}\n${story}`);
+      return;
+    } catch (e) { console.log("[cards] recap render failed:", e.message); }
+    await bot.sendText(chatId, `${header}\n\n${story}`);
+  }
+
   const reliveRuns = new Map(); // chatId -> abort flag
   // speed: time multiplier over the real match clock (1 = real time, 2, 5)
   async function relive(chatId, fixtureId, meta, speed = 5, events = []) {
@@ -529,6 +574,6 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return null;
   }
 
-  return { notifyFollowers, rememberProbs, relive, preMatchOdds, finalResultOf, ask,
+  return { notifyFollowers, rememberProbs, relive, recap, preMatchOdds, finalResultOf, ask,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }

@@ -36,6 +36,8 @@ export function getUser(chatId, from = {}) {
 }
 
 export function setLang(chatId, lang) { getUser(chatId).lang = lang; save(); }
+export function setMode(chatId, mode) { getUser(chatId).mode = mode; save(); }
+export const modeOf = (chatId) => getUser(chatId).mode || "demo";
 export function setPlan(chatId, plan, txSig = null) {
   const u = getUser(chatId);
   u.plan = plan;
