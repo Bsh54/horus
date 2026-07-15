@@ -117,6 +117,20 @@ export function createBank({ journal = () => {} } = {}) {
       saveBets();
     },
 
+    // one-off on-chain payment punter -> house (premium upgrade); funds the
+    // punter's custodial wallet first so the demo flow never dead-ends
+    async pay(chatId, sol, kind = "premium") {
+      const kp = punterKp(chatId);
+      await ensureHouseFunds();
+      const bal = await conn.getBalance(kp.publicKey);
+      if (bal < (sol + 0.01) * LAMPORTS_PER_SOL) {
+        await transfer(house, kp.publicKey, Math.max(FUND_SOL, sol + 0.05));
+      }
+      const sig = await transfer(kp, house.publicKey, sol);
+      journal({ kind: `pay-${kind}`, chatId: String(chatId), sol, txSig: sig });
+      return sig;
+    },
+
     openBetsFor: (fixtureId) => bets.filter((b) => b.fid === Number(fixtureId) && !b.settled),
     betsOf: (chatId) => bets.filter((b) => b.chatId === String(chatId)),
   };

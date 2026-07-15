@@ -3,7 +3,11 @@ TOKEN=$(python3 -c "import json;print(json.load(open('/opt/proofdesk/data/telegr
 curl -s "https://api.telegram.org/bot$TOKEN/setMyCommands" -H 'Content-Type: application/json' -d '{
   "commands": [
     {"command": "matches",   "description": "Pick a World Cup match to watch"},
+    {"command": "follow",    "description": "Follow a match — live alerts"},
+    {"command": "live",      "description": "Current picture of your matches"},
     {"command": "wallet",    "description": "Your devnet SOL balance and bets"},
+    {"command": "plan",      "description": "Your plan — upgrade to Premium"},
+    {"command": "language",  "description": "Change your language"},
     {"command": "stopreplay","description": "Leave the current match"},
     {"command": "start",     "description": "Who is HORUS + help"}
   ]

@@ -7,6 +7,8 @@ import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { gunzipSync } from "zlib";
+import { translate } from "./i18n.mjs";
+import { langOf } from "./users.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA = join(__dirname, "data");
@@ -80,9 +82,11 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     if (!d.head) return;
     const text = [d.head, d.body, d.market].filter(Boolean).join("\n");
     journal({ kind: "pundit", fixtureId, event: ev.kind, text });
-    for (const f of followers) {
-      await bot.sendText(f.chatId, text);
-    }
+    // one translation per language (cached in i18n), fanned out in parallel
+    await Promise.all(followers.map(async (f) => {
+      const out = await translate(text, langOf(f.chatId));
+      return bot.sendText(f.chatId, out);
+    }));
   }
 
   // called after each odds tick so "before" is the pre-event picture
@@ -320,7 +324,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       await new Promise((r) => setTimeout(r, wait));
       if (reliveRuns.get(String(chatId))?.stop) { reliveRuns.delete(String(chatId)); return; }
       prevTs = m.ts;
-      await bot.sendText(chatId, m.txt);
+      await bot.sendText(chatId, await translate(m.txt, langOf(chatId)));
     }
     // with real play-by-play the full-time whistle already closed the show
     await bot.sendText(chatId, usedPbp ? "Next match: /matches" : `🎙 ${closingSummary(meta, events)}\n\nNext match: /matches`);

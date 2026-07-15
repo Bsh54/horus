@@ -11,6 +11,9 @@ import { gzipSync, gunzipSync } from "zlib";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
 import { TxLive } from "./txline-live.mjs";
+import { TxSim } from "./simulator.mjs";
+import * as i18n from "./i18n.mjs";
+import * as users from "./users.mjs";
 import { createAgent, DEFAULT_CONFIG as AGENT_DEFAULTS } from "./agent.mjs";
 import { createBot } from "./bot.mjs";
 import { createHorus } from "./horus.mjs";
@@ -327,10 +330,77 @@ async function sendSpeedChoice(bot, chatId, id) {
   });
 }
 
+// Send a message in the user's language: any English text is translated on
+// the fly (cached per text×lang in i18n, so hot paths cost nothing).
+async function sendT(bot, chatId, text, extra = {}) {
+  return bot.sendText(chatId, await i18n.translate(text, users.langOf(chatId)), extra);
+}
+
+async function sendPlanPortal(bot, chatId) {
+  const lang = users.langOf(chatId);
+  const [title, free, premium] = await Promise.all([
+    i18n.t("choose_plan", lang), i18n.t("plan_free", lang), i18n.t("plan_premium", lang),
+  ]);
+  await bot.sendText(chatId, `<b>${title}</b>\n\n${free}\n\n${premium}`, {
+    reply_markup: { inline_keyboard: [[
+      { text: "🆓 FREE", callback_data: "plan:free" },
+      { text: "⭐ PREMIUM — 0.1 SOL", callback_data: "plan:premium" },
+    ]] },
+  });
+}
+
 async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
   const name = from.first_name || from.username || "fan";
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(" ");
+  const user = users.getUser(chatId, from);
+
+  // ---- onboarding callbacks (language picker, plan portal) ----
+  if (text.startsWith("langpage:")) {
+    await bot.editText(chatId, msgId, i18n.STRINGS.pick_language, { reply_markup: i18n.languageKeyboard(Number(text.split(":")[1])) });
+    return;
+  }
+  if (text.startsWith("lang:")) {
+    const code = text.split(":")[1];
+    if (i18n.isValidLang(code)) {
+      users.setLang(chatId, code);
+      i18n.warmLanguage(code).catch(() => {}); // instantaneity: pre-cache UI strings
+      await bot.editText(chatId, msgId, `${await i18n.t("language_saved", code)} ${i18n.langName(code)}.`);
+      if (!user.plan) await sendPlanPortal(bot, chatId);
+    }
+    return;
+  }
+  if (text.startsWith("plan:")) {
+    const plan = text.split(":")[1];
+    if (plan === "free") {
+      users.setPlan(chatId, "free");
+      await botCommand({ chatId, text: "/start", from, bot });
+    } else if (plan === "premium") {
+      if (!bank) { await sendT(bot, chatId, "The bank is offline right now — try again in a moment."); return; }
+      await sendT(bot, chatId, "⏳ Processing your 0.1 SOL payment on Solana devnet…");
+      try {
+        const sig = await bank.pay(chatId, users.PREMIUM_SOL, "premium");
+        users.setPlan(chatId, "premium", sig);
+        const done = await i18n.t("payment_received", users.langOf(chatId));
+        await bot.sendText(chatId, `${done}\n<a href="${bank.explorer(sig)}">View the transaction on Solana Explorer</a>`);
+        await botCommand({ chatId, text: "/start", from, bot });
+      } catch (e) {
+        console.log("[premium] payment failed:", e.message);
+        await sendT(bot, chatId, "Couldn't reach Solana devnet — try again in a moment.");
+      }
+    }
+    return;
+  }
+
+  // first contact: language first, everything else flows from it
+  if (!user.lang && !text.startsWith("/language")) {
+    await bot.sendText(chatId, `𓂀 <b>${i18n.STRINGS.welcome}</b>\n\n${i18n.STRINGS.pick_language}`, { reply_markup: i18n.languageKeyboard(0) });
+    return;
+  }
+  if (user.lang && !user.plan && !isCallback && text.startsWith("/") && !text.startsWith("/language")) {
+    await sendPlanPortal(bot, chatId);
+    return;
+  }
   const listMatches = () => {
     // every catalogued match that has a watchable archive, newest first
     const rows = catalog.filter((c) => hasArchive(c.id)).map((c) => ({ id: c.id, meta: c }));
@@ -339,8 +409,15 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
   };
   switch ((cmd || "").toLowerCase()) {
     case "/start":
-      await bot.sendText(chatId,
-        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, pick your pace, follow my commentary — and if you fancy it, take on the market with real on-chain SOL stakes (devnet).\n\n⚽ /matches — pick a match to watch\n👛 /wallet — your balance and bets\n⏹ /stopreplay — leave the current match`);
+      await sendT(bot, chatId,
+        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, follow my commentary — and if you fancy it, take on the market with real on-chain SOL stakes (devnet).\n\n⚽ /matches — pick a match to watch\n👛 /wallet — your balance and bets\n⭐ /plan — your plan (${users.isPremium(chatId) ? "PREMIUM" : "FREE"})\n🌍 /language — change language\n⏹ /stopreplay — leave the current match`);
+      break;
+    case "/language":
+      await bot.sendText(chatId, await i18n.t("change_language", users.langOf(chatId)), { reply_markup: i18n.languageKeyboard(0) });
+      break;
+    case "/plan":
+      if (users.isPremium(chatId)) await sendT(bot, chatId, "⭐ You're on <b>PREMIUM</b> — visual cards, unlimited AI, sharp-money alerts. Enjoy.");
+      else await sendPlanPortal(bot, chatId);
       break;
     case "/matches": {
       const rows = listMatches();
@@ -454,8 +531,8 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         }
         break;
       }
-      if (text.startsWith("/")) await bot.sendText(chatId, "Unknown command — /start shows what I can do.");
-      else await bot.sendText(chatId, "Pick a match to watch with /matches, or /live for the current picture.");
+      if (text.startsWith("/")) await sendT(bot, chatId, "Unknown command — /start shows what I can do.");
+      else await sendT(bot, chatId, "Pick a match to watch with /matches, or /live for the current picture.");
   }
 }
 
@@ -676,9 +753,14 @@ function liveMinute(ts) {
   return Math.max(0, Math.round((ts - liveSession.startTs) / 60000));
 }
 
+// DEMO_MODE=1 swaps the real SSE connector for the simulator (same pipeline,
+// authentic TxLINE historical data replayed as-if-live).
+const DEMO_MODE = process.env.DEMO_MODE === "1";
+
 function ensureLive() {
   if (live) return live;
-  live = new TxLive({
+  const Connector = DEMO_MODE ? TxSim : TxLive;
+  live = new Connector({
     onStatus: (s) => broadcast({ kind: "live_status", ...s }),
     onScore: (s) => {
       const m = s.raw;
@@ -706,6 +788,8 @@ function ensureLive() {
       // agent: in-play event triggers + settlement on final whistle
       const tsNow = m.Ts || Date.now();
       const side0 = st.score[0] > prev.score[0], side1 = st.score[1] > prev.score[1];
+      // catchup = simulator backlog replay: build state silently, no pings
+      if (s.catchup) return;
       if (side0 || side1) liveAgent.onIncident(m.FixtureId, { kind: "goal", isHome: side0, ts: tsNow, score: [...st.score] });
       if (st.red[0] > prev.red[0]) liveAgent.onIncident(m.FixtureId, { kind: "red", isHome: true, ts: tsNow, score: [...st.score] });
       if (st.red[1] > prev.red[1]) liveAgent.onIncident(m.FixtureId, { kind: "red", isHome: false, ts: tsNow, score: [...st.score] });
@@ -727,6 +811,7 @@ function ensureLive() {
     },
     onOdds: (o) => {
       broadcast({ kind: "live_odds_all", fixtureId: o.fixtureId, odds: { home: o.home, draw: o.draw, away: o.away }, inRunning: o.inRunning });
+      if (o.catchup) return; // simulator backlog — state only, no reactions
       // agent watches EVERY fixture on the stream, autonomously
       liveAgent.onOdds({
         fixtureId: o.fixtureId, ts: o.ts || Date.now(),
