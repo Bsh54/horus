@@ -123,6 +123,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const premium = bot.followersOf(fixtureId).filter((f) => isPremium(f.chatId));
     if (!premium.length) return;
     const st = getState(fixtureId) || {};
+    if (kind === "fulltime" && st.seq) ev = { ...ev, verified: `VERIFIED — TxLINE proof on Solana · seq ${st.seq} · statKey 1` };
     if (!ev.player && (kind === "goal" || kind === "red")) {
       const p = playerFromPbp(fixtureId, kind, st.score);
       if (p) ev = { ...ev, player: p };

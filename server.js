@@ -14,6 +14,7 @@ import { TxLive } from "./txline-live.mjs";
 import { TxSim } from "./simulator.mjs";
 import * as i18n from "./i18n.mjs";
 import * as users from "./users.mjs";
+import { verifySummary } from "./proofs.mjs";
 import { createAgent, DEFAULT_CONFIG as AGENT_DEFAULTS } from "./agent.mjs";
 import { createBot } from "./bot.mjs";
 import { createHorus } from "./horus.mjs";
@@ -434,6 +435,30 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       } else await sendT(bot, chatId, "My analysis engine is busy — try again in a moment.");
       break;
     }
+    case "/verify": {
+      // prove a match's stats against the TxLINE Merkle root anchored on Solana
+      const rows = chatLists.get(String(chatId)) || listMatches().map((r) => r.id);
+      const id = rows[parseInt(arg, 10) - 1];
+      const st = id ? scoreStates.get(Number(id)) : null;
+      if (!id || !st?.seq) { await sendT(bot, chatId, "Do /matches first, then /verify N — I'll prove that match's stats on-chain."); break; }
+      await sendT(bot, chatId, "🔏 Fetching the Merkle proof from TxLINE…");
+      try {
+        const v = await verifySummary(Number(id), st.seq);
+        const meta = metaOf(id) || { home: "Home", away: "Away" };
+        const ok = v.parts.filter((p) => !p.error);
+        const lines = ok.map((p) => `• ${p.name}: <b>${JSON.stringify(p.value)}</b> — ${p.proofNodes} proof nodes`);
+        await bot.sendText(chatId,
+          `🔏 <b>${meta.home} ${st.score?.[0] ?? ""}-${st.score?.[1] ?? ""} ${meta.away}</b> — ${await i18n.t("verified_onchain", users.langOf(chatId))}\n\n` +
+          `${lines.join("\n")}\n\n` +
+          `Merkle root: <code>${(v.root || "").slice(0, 16)}…${(v.root || "").slice(-8)}</code>\n` +
+          `seq ${v.seq} · TxLINE program <code>6pW64gN1s...yP2J</code> (Solana devnet)\n` +
+          `Anyone can replay this proof against the on-chain root — HORUS can't invent a score.`);
+      } catch (e) {
+        console.log("[verify]", e.message);
+        await sendT(bot, chatId, "Proof service unreachable right now — try again in a moment.");
+      }
+      break;
+    }
     case "/language":
       await bot.sendText(chatId, await i18n.t("change_language", users.langOf(chatId)), { reply_markup: i18n.languageKeyboard(0) });
       break;
@@ -793,6 +818,7 @@ function ensureLive() {
       if (m.Clock?.Seconds != null) st.minute = Math.floor(m.Clock.Seconds / 60);
       if (m.GameState) st.gameState = m.GameState;
       if (m.StatusId != null) st.statusId = m.StatusId;
+      if (m.Seq) st.seq = m.Seq; // last Seq = Merkle proof anchor for /verify
       if (m.Possession != null) st.possession = m.Possession;
       if (m.Stats) {
         const d = decodeTxStats(m.Stats);
