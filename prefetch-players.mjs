@@ -87,6 +87,6 @@ for (const name of all) {
     console.log(`OK  ${name} (${got.kind})`);
   } else if (existsSync(file)) counts.kept++;
   else { counts.miss++; console.log(`MISS ${name}`); }
-  await new Promise((r) => setTimeout(r, 400));
+  await new Promise((r) => setTimeout(r, 2200)); // TheSportsDB free tier: 30 req/min
 }
 console.log("\ndone:", JSON.stringify(counts));
