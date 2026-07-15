@@ -3,41 +3,24 @@
 // context (win probabilities, odds moves), speaks through TTS voice notes,
 // answers questions through an optional LLM layer, and can replay any archived
 // match of the tournament as if it were live.
-import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from "fs";
+import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { execFile } from "child_process";
 import { gunzipSync } from "zlib";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA = join(__dirname, "data");
-const TTS_DIR = join(DATA, "tts");
-mkdirSync(TTS_DIR, { recursive: true });
 
 const DEEPSEEK_FILE = join(DATA, "deepseek.json");
-const deepseekKey = existsSync(DEEPSEEK_FILE) ? JSON.parse(readFileSync(DEEPSEEK_FILE, "utf8")).key : null;
+const dsConf = existsSync(DEEPSEEK_FILE) ? JSON.parse(readFileSync(DEEPSEEK_FILE, "utf8")) : {};
+const deepseekKey = dsConf.key || null;
+const deepseekModel = dsConf.model || "deepseek-chat";
 
 const pctS = (p) => (p * 100).toFixed(0) + "%";
 
 export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   // per-fixture last known probabilities to phrase "before -> after"
   const probMem = new Map();
-
-  // ---------------------------------------------------------------------------
-  // TTS: edge-tts (free neural voices) -> mp3 -> ffmpeg -> ogg/opus voice note
-  // ---------------------------------------------------------------------------
-  function tts(text, outBase) {
-    return new Promise((resolve) => {
-      const mp3 = join(TTS_DIR, outBase + ".mp3");
-      const ogg = join(TTS_DIR, outBase + ".ogg");
-      execFile("edge-tts", ["--voice", "en-GB-RyanNeural", "--rate", "+12%", "--text", text, "--write-media", mp3], { timeout: 30000 }, (e1) => {
-        if (e1) return resolve(null);
-        execFile("ffmpeg", ["-y", "-i", mp3, "-c:a", "libopus", "-b:a", "32k", ogg], { timeout: 30000 }, (e2) => {
-          resolve(e2 ? null : ogg);
-        });
-      });
-    });
-  }
 
   // ---------------------------------------------------------------------------
   // LLM layer (optional): colourful phrasing + Q&A. Deterministic templates are
@@ -50,7 +33,8 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${deepseekKey}` },
         body: JSON.stringify({
-          model: "deepseek-chat", max_tokens: maxTokens, temperature: 0.7,
+          model: deepseekModel, max_tokens: maxTokens, temperature: 0.7,
+          thinking: { type: "disabled" }, // plain answers, no reasoning preamble
           messages: [{ role: "system", content: system }, { role: "user", content: user }],
         }),
         signal: AbortSignal.timeout(12000),
@@ -60,7 +44,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     } catch { return null; }
   }
 
-  const PUNDIT_PERSONA = "You are HORUS, a jovial, warm, funny football pundit — like an excited best friend watching the match with the fan. Talk casually, with energy and humour, 1-3 short sentences, spoken style, no markdown, no emojis in voice lines. You know betting markets inside out: probabilities come from real demargined odds. Never invent facts beyond the data given.";
+  const PUNDIT_PERSONA = "You are HORUS, a sharp, credible football pundit and market analyst. Tone: professional, direct, warm but never gushing — no flattery, no hype, no exclamation spam, at most one emoji. 1-3 concise sentences. You know betting markets inside out: probabilities come from real demargined odds. Never invent facts beyond the data given.";
 
   // ---------------------------------------------------------------------------
   // Narration templates (deterministic core)
@@ -112,18 +96,8 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     if (!d.head) return;
     const text = [d.head, d.body, d.market].filter(Boolean).join("\n");
     journal({ kind: "pundit", fixtureId, event: ev.kind, text });
-
-    // voice line for the big moments (goal / red / steam)
-    let ogg = null;
-    if (["goal", "red", "steam"].includes(ev.kind)) {
-      const spoken = (await llm(PUNDIT_PERSONA,
-        `Say this event as a live pundit voice line: ${d.head}. ${d.body} ${d.market}`)) ||
-        `${d.head.replace(/[⚽🟥🚨]/g, "")}. ${d.body}`;
-      ogg = await tts(spoken, `${fixtureId}-${Date.now()}`);
-    }
     for (const f of followers) {
       await bot.sendText(f.chatId, text);
-      if (ogg && f.voice !== false) await bot.sendVoice(f.chatId, ogg);
     }
   }
 
@@ -174,7 +148,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     if (last) {
       const p = probOf(last);
       const winner = p.home > 0.8 ? meta.home : p.away > 0.8 ? meta.away : p.draw > 0.8 ? "a draw" : null;
-      if (winner) out.push({ ts: last.ts, txt: `🏁 <b>FULL TIME!</b> ${winner === "a draw" ? "It ends level" : winner + " take it"}! Final market read: ${meta.home} ${pctS(p.home)} · Draw ${pctS(p.draw)} · ${meta.away} ${pctS(p.away)} — what a watch! 🙌` });
+      if (winner) out.push({ ts: last.ts, txt: `🏁 <b>Full time.</b> ${winner === "a draw" ? "It ends level" : winner + " take it"}. Final market read: ${meta.home} ${pctS(p.home)} · Draw ${pctS(p.draw)} · ${meta.away} ${pctS(p.away)}` });
     }
     // keep at most 12 moments
     return out.length > 12 ? [out[0], ...out.slice(1, -1).filter((_, i) => i % Math.ceil((out.length - 2) / 10) === 0), out[out.length - 1]] : out;
@@ -212,9 +186,9 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       const team = e.isHome ? meta.home : meta.away;
       const min = e.minute != null ? `${e.minute}'` : "";
       const sc = e.score ? `${meta.home} ${e.score[0]}-${e.score[1]} ${meta.away}` : "";
-      if (e.kind === "goal") out.push({ ts: e.ts, big: true, txt: `⚽ <b>GOOOAL — ${team}!</b> ${sc} (${min}) 🎉` });
-      else if (e.kind === "red") out.push({ ts: e.ts, big: true, txt: `🟥 <b>RED CARD — ${team} down to ten men!</b> (${min}) Drama! ${sc}` });
-      else if (e.kind === "yellow") out.push({ ts: e.ts, txt: `🟨 Yellow card for ${team} (${min})` });
+      if (e.kind === "goal") out.push({ ts: e.ts, big: true, txt: `⚽ <b>GOAL — ${team}.</b> ${sc} (${min})` });
+      else if (e.kind === "red") out.push({ ts: e.ts, big: true, txt: `🟥 <b>Red card — ${team} down to ten.</b> (${min}) ${sc}` });
+      else if (e.kind === "yellow") out.push({ ts: e.ts, txt: `🟨 Yellow card — ${team} (${min})` });
       else if (e.kind === "phase") out.push({ ts: e.ts, txt: `⏱ <b>${e.text}</b>${sc ? " — " + sc : ""}` });
     }
     return out;
@@ -224,7 +198,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   // durationSec: how long the fan wants the whole match to take
   async function relive(chatId, fixtureId, meta, durationSec = 300, events = []) {
     const ticks = loadTicksFor(fixtureId);
-    if (!ticks || !ticks.length) { await bot.sendText(chatId, "Ah, that one's not in my library yet! 😔 Try another — /matches"); return; }
+    if (!ticks || !ticks.length) { await bot.sendText(chatId, "No coverage available for that match — /matches for the rest."); return; }
     let moments = buildTimeline(ticks, meta);
     const evMoments = eventMoments(events, meta);
     if (evMoments.length) {
@@ -232,12 +206,12 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       moments = moments.filter((m) => !/💥|📉/.test(m.txt)).concat(evMoments);
       moments.sort((a, b) => a.ts - b.ts);
     }
-    if (!moments.length) { await bot.sendText(chatId, "That match was so quiet even the market fell asleep 😴 Pick another one — /matches"); return; }
+    if (!moments.length) { await bot.sendText(chatId, "No market story available for that match — /matches for another."); return; }
     const span = Math.max(1, moments[moments.length - 1].ts - moments[0].ts);
     const factor = span / (durationSec * 1000); // real ms per replay ms
     reliveRuns.set(String(chatId), { stop: false });
     await bot.sendText(chatId,
-      `🔴 <b>WE'RE LIVE — ${meta.home} 🆚 ${meta.away}!</b> 🏟\n\nI'm your eyes on the pitch AND on the market. Grab a drink, I'm commentating — you just enjoy! 🍹\n<i>(/stopreplay to leave the match)</i>`);
+      `🔴 <b>${meta.home} vs ${meta.away}</b> — coverage starting.\nI'll bring you the match and what the market makes of it. <i>(/stopreplay to leave)</i>`);
     let prevTs = moments[0].ts;
     for (const m of moments) {
       const wait = Math.min(60000, Math.max(800, (m.ts - prevTs) / factor));
@@ -245,19 +219,10 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       if (reliveRuns.get(String(chatId))?.stop) { reliveRuns.delete(String(chatId)); return; }
       prevTs = m.ts;
       await bot.sendText(chatId, m.txt);
-      // the biggest moments also arrive as voice
-      if (m.big || (!m.checkpoint && /💥/.test(m.txt))) {
-        const spoken = (await llm(PUNDIT_PERSONA, `Say this replay moment as a live pundit voice line: ${m.txt.replace(/<[^>]+>/g, "")}`))
-          || m.txt.replace(/[💥📉🏁⏱]/g, "");
-        const ogg = await tts(spoken, `relive-${chatId}-${Date.now()}`);
-        const sub = bot.subs.get(String(chatId));
-        if (ogg && (!sub || sub.voice !== false)) await bot.sendVoice(chatId, ogg);
-      }
     }
-    const spoken = (await llm(PUNDIT_PERSONA, `Give a 2-sentence closing summary of this match market story:\n${moments.filter((m) => !m.checkpoint).map((m) => m.txt).join("\n")}`))
-      || `And that is full time in ${meta.home} against ${meta.away}. What a story the market told.`;
-    const ogg = await tts(spoken, `relive-${chatId}-${Date.now()}`);
-    if (ogg) await bot.sendVoice(chatId, ogg);
+    // closing pundit summary
+    const summary = await llm(PUNDIT_PERSONA, `Give a 2-3 sentence closing analysis of this match:\n${moments.filter((m) => !m.checkpoint).map((m) => m.txt.replace(/<[^>]+>/g, "")).join("\n")}`);
+    await bot.sendText(chatId, (summary ? `🎙 ${summary}` : `🎙 That's full time in ${meta.home} vs ${meta.away}.`) + "\n\nNext match: /matches");
     reliveRuns.delete(String(chatId));
   }
 
@@ -266,9 +231,9 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   // ---------------------------------------------------------------------------
   async function ask(chatId, question, liveContext) {
     const answer = await llm(PUNDIT_PERSONA + " Answer the fan's question strictly from this live data:\n" + liveContext, question, 300);
-    await bot.sendText(chatId, answer || "My chatty brain is taking a nap right now 😴 — but the numbers never sleep! Try /live for the raw picture.");
+    await bot.sendText(chatId, answer || "Analysis engine unavailable right now — /live gives you the raw numbers.");
   }
 
-  return { notifyFollowers, rememberProbs, relive, ask, tts, llm,
+  return { notifyFollowers, rememberProbs, relive, ask, llm,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }

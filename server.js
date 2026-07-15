@@ -306,18 +306,18 @@ async function sendMatchesPage(bot, chatId, rows, page = 0) {
   nav.push({ text: `${page + 1}/${pages}`, callback_data: "noop" });
   if (page < pages - 1) nav.push({ text: "Next ➡️", callback_data: `pg:${page + 1}` });
   kb.push(nav);
-  await bot.sendText(chatId, `⚽ <b>Matches on HORUS TV</b> — ${rows.length} matches ready to watch. Tap one! 🔴`, {
+  await bot.sendText(chatId, `⚽ <b>Match coverage</b> — ${rows.length} matches available. Tap one to watch.`, {
     reply_markup: { inline_keyboard: kb },
   });
 }
 
 async function sendSpeedChoice(bot, chatId, id) {
-  await bot.sendText(chatId, `🔴 <b>${matchLabel(id)}</b> — we're going in! 🎉\n\nHow do you want to watch it?`, {
+  await bot.sendText(chatId, `<b>${matchLabel(id)}</b>\nPick your pace:`, {
     reply_markup: { inline_keyboard: [[
-      { text: "⚡ Quick match (2 min)", callback_data: `rl:${id}:120` },
-      { text: "🎬 Classic (5 min)", callback_data: `rl:${id}:300` },
+      { text: "⚡ Quick (2 min)", callback_data: `rl:${id}:120` },
+      { text: "🎬 Standard (5 min)", callback_data: `rl:${id}:300` },
     ], [
-      { text: "🍿 Full experience (10 min)", callback_data: `rl:${id}:600` },
+      { text: "🍿 Extended (10 min)", callback_data: `rl:${id}:600` },
     ]] },
   });
 }
@@ -335,45 +335,41 @@ async function botCommand({ chatId, text, from, bot }) {
   switch ((cmd || "").toLowerCase()) {
     case "/start":
       await bot.sendText(chatId,
-        `𓂀 <b>Heyyy ${name}! I'm HORUS — your football buddy with the all-seeing eye.</b> 👁⚽\n\nWelcome to <b>HORUS TV</b>: I broadcast World Cup matches right here in Telegram. Pick a match, pick your pace, and we watch it together — goals, red cards, market drama, my voice notes and all. 🎙🔥\n\n<b>Let's go:</b>\n⚽ /matches — what's on, tap and watch\n💬 /ask — chat with me about any match\n\n<b>Extras:</b>\n📊 /live — the picture right now\n🎙 /voice off|on — my voice notes\n⏹ /stopreplay — leave the match\n🤫 /unfollow — mute me (I'll be sad)`);
+        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, pick your pace, and follow it with my commentary.\n\n<b>Main commands</b>\n⚽ /matches — pick a match to watch\n💬 /ask — ask me about any match\n\n<b>More</b>\n📊 /live — current picture\n⏹ /stopreplay — leave the match\n/unfollow — mute all alerts`);
       break;
     case "/matches": {
       const rows = listMatches();
-      if (!rows.length) { await bot.sendText(chatId, "Hmm, the schedule is loading — give me a minute and try again! 🙏"); break; }
+      if (!rows.length) { await bot.sendText(chatId, "The schedule is still loading — try again in a minute."); break; }
       await sendMatchesPage(bot, chatId, rows, parseInt(arg, 10) || 0);
       break;
     }
     case "/follow": {
       const rows = chatLists.get(String(chatId)) || listMatches().map((r) => r.id);
       const id = rows[parseInt(arg, 10) - 1];
-      if (!id) { await bot.sendText(chatId, "Oops! 😅 Do /matches first, then /follow N (the number in the list)."); break; }
+      if (!id) { await bot.sendText(chatId, "Do /matches first, then /follow N (the number in the list)."); break; }
       bot.subscribe(chatId, id, name);
-      await bot.sendText(chatId, `🔔 Deal, ${name}! I've got my eye on <b>${matchLabel(id)}</b> for you. The SECOND something big happens — goal, red card, market panic — you'll hear from me. 𓂀⚡`);
+      await bot.sendText(chatId, `🔔 Following <b>${matchLabel(id)}</b>. You'll get goals, cards and significant market moves as they happen.`);
       break;
     }
     case "/followall":
       bot.subscribe(chatId, "all", name);
-      await bot.sendText(chatId, "🔥 Bold choice! I'm now watching <b>EVERY match</b> for you. Buckle up — when the World Cup speaks, you'll be the first to know. 𓂀");
+      await bot.sendText(chatId, "🔔 Following every match on the feed. You'll be notified when something matters.");
       break;
     case "/unfollow":
       bot.unsubscribe(chatId);
-      await bot.sendText(chatId, "😢 Okay okay, going quiet... You know where to find me when you miss the action: /matches");
-      break;
-    case "/voice":
-      bot.setVoice(chatId, arg !== "off");
-      await bot.sendText(chatId, arg === "off" ? "🤐 Voice notes off — text only, got it!" : "🎙 Voice notes ON — you'll love my commentary voice 😄");
+      await bot.sendText(chatId, "Alerts off. /matches whenever you want back in.");
       break;
     case "/live": {
       const subs = bot.subs.get(String(chatId));
       const ids = subs ? (subs.follows[0] === "all" ? (live ? live.allFixtureIds() : []) : subs.follows) : [];
       const active = ids.filter((id) => scoreStates.get(Number(id))?.statusId && scoreStates.get(Number(id)).statusId !== 10);
       const shown = (active.length ? active : ids).slice(0, 5);
-      if (!shown.length) { await bot.sendText(chatId, "You're not following anything yet, my friend! 😄 Do /matches and pick one."); break; }
+      if (!shown.length) { await bot.sendText(chatId, "You're not following anything yet. /matches to pick one."); break; }
       for (const id of shown) await bot.sendText(chatId, liveContextFor(Number(id)));
       break;
     }
     case "/ask": {
-      if (!arg) { await bot.sendText(chatId, "Go ahead, ask me anything! ⚽ Like: /ask who's winning? or /ask what does the market think of England?"); break; }
+      if (!arg) { await bot.sendText(chatId, "Ask me something, e.g. /ask who is winning? or /ask what does the market think of England?"); break; }
       const subs = bot.subs.get(String(chatId));
       const ids = subs ? (subs.follows[0] === "all" ? (live ? live.allFixtureIds() : []) : subs.follows) : (live ? live.allFixtureIds() : []);
       const ctx = ids.slice(0, 6).map((id) => liveContextFor(Number(id))).join("\n---\n");
@@ -390,7 +386,7 @@ async function botCommand({ chatId, text, from, bot }) {
     }
     case "/stopreplay":
       horus.stopReplay(chatId);
-      await bot.sendText(chatId, "⏹ Replay stopped! No worries — the library never closes: /matches 😉");
+      await bot.sendText(chatId, "⏹ Coverage stopped. /matches to pick another.");
       break;
     default:
       if (text.startsWith("pick:")) { // match tapped in the list
@@ -410,7 +406,7 @@ async function botCommand({ chatId, text, from, bot }) {
         horus.relive(chatId, Number(fid), metaOf(fid) || { home: "Home", away: "Away" }, Number(sec), events);
         break;
       }
-      if (text.startsWith("/")) await bot.sendText(chatId, "Hmm, I don't know that one! 😅 /start shows everything I can do.");
+      if (text.startsWith("/")) await bot.sendText(chatId, "Unknown command — /start shows what I can do.");
       else { // free text = conversation
         const ids = live ? live.allFixtureIds() : [];
         const ctx = ids.slice(0, 6).map((id) => liveContextFor(Number(id))).join("\n---\n");

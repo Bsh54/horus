@@ -7,9 +7,8 @@ curl -s "https://api.telegram.org/bot$TOKEN/setMyCommands" -H 'Content-Type: app
     {"command": "followall", "description": "Follow every match"},
     {"command": "live",      "description": "Score, probabilities and odds right now"},
     {"command": "ask",       "description": "Ask HORUS anything about the matches"},
-    {"command": "relive",    "description": "Replay a past match as if live"},
-    {"command": "stopreplay","description": "Stop the current replay"},
-    {"command": "voice",     "description": "Voice notes on / off"},
+    {"command": "relive",    "description": "Watch a match from the start"},
+    {"command": "stopreplay","description": "Leave the current match"},
     {"command": "unfollow",  "description": "Silence all alerts"},
     {"command": "start",     "description": "Who is HORUS + help"}
   ]
