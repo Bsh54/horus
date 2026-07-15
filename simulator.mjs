@@ -141,6 +141,23 @@ export class TxSim extends TxLive {
 
   // Demo phase for menus (live/upcoming/finished as of *simulated* now).
   phaseOf(fixtureId) { return this.matches.get(fixtureId)?.cfg.phase || null; }
+
+  // Demo clock control: change speed without jumping the timeline — the
+  // elapsed simulated time is preserved by rebasing simStart.
+  setSpeed(newSpeed) {
+    newSpeed = Math.min(20, Math.max(1, Number(newSpeed) || 1));
+    const scaled = (Date.now() - this.simStart) * this.speed;
+    this.speed = newSpeed;
+    this.simStart = Date.now() - scaled / newSpeed;
+    // upcoming kick-off wall-clock times shift with the new speed
+    for (const [id, m] of this.matches) {
+      if (m.cfg.phase !== "upcoming") continue;
+      const meta = this.meta.get(id);
+      if (meta) meta.startTime = new Date(Date.now() + Math.max(0, m.startsInMs - scaled) / newSpeed).toISOString();
+    }
+    this.onStatus({ state: "sim_speed", speed: newSpeed });
+    return newSpeed;
+  }
 }
 
 // Propagate the catchup flag through TxLive's normalised events.

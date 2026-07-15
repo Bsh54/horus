@@ -383,6 +383,14 @@ async function sendMatchesPage(bot, chatId, phase, page = 0, editMsgId = null) {
   nav.push({ text: `${page + 1}/${pages}`, callback_data: "noop" });
   if (page < pages - 1) nav.push({ text: "➡️", callback_data: `pg:${phase}:${page + 1}` });
   kb.push(nav);
+  // demo clock: the whole championship can be fast-forwarded (shared world)
+  if (phase === "live" && sim) {
+    kb.push([
+      { text: sim.speed === 1 ? "· x1 ·" : "x1", callback_data: "clock:1" },
+      { text: sim.speed === 5 ? "· x5 ·" : "x5", callback_data: "clock:5" },
+      { text: sim.speed === 10 ? "· x10 ·" : "x10", callback_data: "clock:10" },
+    ]);
+  }
   const ui = PHASE_UI[phase];
   const text = `${ui.icon ? ui.icon + " " : ""}<b>${ui.title}</b> · ${ids.length}`;
   const extra = { reply_markup: { inline_keyboard: kb } };
@@ -638,6 +646,13 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         break;
       }
       if (text === "noop") break;
+      if (text.startsWith("clock:")) { // demo clock speed (shared by design)
+        const sp = sim ? sim.setSpeed(Number(text.split(":")[1])) : 1;
+        await sendT(bot, chatId, sp === 1
+          ? `<b>Match clock: real time.</b>`
+          : `<b>Match clock: x${sp}.</b>\nThe whole championship now runs ${sp} times faster — goals arrive in minutes, not halves.`);
+        break;
+      }
       if (text.startsWith("bet:")) { // side tapped on the betting keyboard
         const [, fid, side] = text.split(":");
         if (!bank) { await bot.sendText(chatId, "The bank is offline right now."); break; }
