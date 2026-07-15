@@ -168,7 +168,9 @@ export class TxLive {
       const odds = {
         type: "odds", fixtureId: m.FixtureId, messageId: m.MessageId, ts: m.Ts,
         home: m.Prices[0] / 1000, draw: m.Prices[1] / 1000, away: m.Prices[2] / 1000,
-        pct: m.Pct, inRunning: !!m.InRunning, bookmaker: m.Bookmaker,
+        // live feed sends Pct as strings ("25.913") — normalise to numbers
+        pct: Array.isArray(m.Pct) ? m.Pct.map(Number) : m.Pct,
+        inRunning: !!m.InRunning, bookmaker: m.Bookmaker,
       };
       fx.lastOdds = odds;
       if (!fx.openingOdds) fx.openingOdds = { home: odds.home, draw: odds.draw, away: odds.away, ts: odds.ts };
