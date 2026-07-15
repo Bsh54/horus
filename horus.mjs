@@ -10,6 +10,7 @@ import { gunzipSync } from "zlib";
 import { translate, t as tKey } from "./i18n.mjs";
 import { langOf, isPremium } from "./users.mjs";
 import { renderCard, buildEventJob, playerPhoto } from "./cards.mjs";
+import { quoteFor, polish } from "./personas.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA = join(__dirname, "data");
@@ -138,12 +139,26 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       if (!byLang.has(lang)) byLang.set(lang, []);
       byLang.get(lang).push(f.chatId);
     }
+    // Persona voice: deterministic line, one optional LLM polish (3s budget),
+    // then translated per language. Facts come from the live state only.
+    const team = ev.isHome ? d.meta.home : d.meta.away;
+    const baseQuote = quoteFor(kind, {
+      fixtureId, team, player: ev.player?.name,
+      minute: st.minute, score: (st.score || []).join("-"),
+      prob: ctx.probs ? Math.round((ev.isHome ? ctx.probs.home : ctx.probs.away) * 100) + "%" : "—",
+      fav: ctx.probs ? (ctx.probs.home >= ctx.probs.away ? d.meta.home : d.meta.away) : "",
+      remaining: st.minute != null ? Math.max(0, 90 - st.minute) : "the remaining",
+      ruling: ev.ruling || "decision overturned",
+      move: ev.detail || "sharply", window: "minutes",
+      count: (st.corners || [])[ev.isHome ? 0 : 1],
+    });
+    const quote = await polish(kind, baseQuote, `${d.meta.home} ${(st.score || []).join("-")} ${d.meta.away}, minute ${st.minute}`);
     for (const [lang, chatIds] of byLang) {
       const texts = {};
       for (const k of ["goal", "red_card", "yellow_card", "corner", "win_probability", "fulltime", "kickoff", "odds_moved"])
         texts[k] = (await tKey(k, lang)).toUpperCase();
-      const quoteText = await translate([d.body, d.market].filter(Boolean).join(" ").replace(/<[^>]+>/g, ""), lang);
-      const job = buildEventJob({ ...ev, kind, quote: quoteText ? { author: "HORUS", text: quoteText } : null }, { ...ctx, texts });
+      const quoteText = await translate(quote.text, lang);
+      const job = buildEventJob({ ...ev, kind, quote: { author: quote.author, text: quoteText } }, { ...ctx, texts });
       if (!job) continue;
       const cacheKey = `${fixtureId}-${kind}-${(st.score || []).join("")}-${st.minute ?? "x"}-${lang}`;
       try {
