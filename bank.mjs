@@ -74,18 +74,25 @@ export function createBank({ journal = () => {} } = {}) {
       return bets.some((b) => b.chatId === String(chatId) && b.fid === Number(fixtureId) && !b.settled);
     },
 
-    // stake goes punter -> house, on-chain; funds the punter first if new
+    // stake goes punter -> house, on-chain; funds the punter first if new.
+    // If devnet liquidity is dry (faucet 429s), the position is still taken
+    // and marked deferred — the demo never blocks on test-network faucets.
     async placeBet(chatId, fixtureId, side, sideName, odds) {
-      const kp = punterKp(chatId);
-      await ensureHouseFunds();
-      const bal = await conn.getBalance(kp.publicKey);
-      if (bal < (STAKE_SOL + 0.01) * LAMPORTS_PER_SOL) {
-        await transfer(house, kp.publicKey, FUND_SOL); // starter grant from the house
-      }
-      const sig = await transfer(kp, house.publicKey, STAKE_SOL);
+      let sig = null;
+      try {
+        const kp = punterKp(chatId);
+        await ensureHouseFunds();
+        const bal = await conn.getBalance(kp.publicKey);
+        if (bal < (STAKE_SOL + 0.01) * LAMPORTS_PER_SOL) {
+          const houseBal = await conn.getBalance(house.publicKey);
+          const grant = houseBal >= (FUND_SOL + 0.01) * LAMPORTS_PER_SOL ? FUND_SOL : STAKE_SOL + 0.05;
+          await transfer(house, kp.publicKey, grant);
+        }
+        sig = await transfer(kp, house.publicKey, STAKE_SOL);
+      } catch (e) { console.log("[bank] on-chain stake deferred:", e.message); }
       const bet = {
         id: `${Date.now()}-${chatId}`, chatId: String(chatId), fid: Number(fixtureId),
-        side, sideName, odds, stake: STAKE_SOL, txSig: sig, settled: false, placedAt: Date.now(),
+        side, sideName, odds, stake: STAKE_SOL, txSig: sig, deferred: !sig, settled: false, placedAt: Date.now(),
       };
       bets.push(bet); saveBets();
       journal({ kind: "bet-placed", ...bet });

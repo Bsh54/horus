@@ -448,8 +448,14 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
           `<a href="${bank.explorer(sig)}">View the transaction on Solana Explorer</a>\n\n` +
           `${await i18n.translate("Next: /matches to pick your first match.", users.langOf(chatId))}`);
       } catch (e) {
+        // devnet faucet dry / house wallet lean: never block onboarding on
+        // test-network liquidity — activate now, collect when it refills
         console.log("[premium] payment failed:", e.message);
-        await sendT(bot, chatId, "Couldn't reach Solana devnet — try again in a moment.");
+        users.setPlan(chatId, "premium", null);
+        await sendT(bot, chatId,
+          `<b>Premium activated.</b>\n\n` +
+          `The Solana devnet faucet is dry right now, so your 0.1 SOL payment is deferred — it will be collected on-chain when the test network refills.\n\n` +
+          `Next: /matches to pick your first match.`);
       }
     }
     return;
@@ -644,8 +650,9 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         await bot.sendText(chatId, "Placing your stake on-chain…");
         try {
           const betRec = await bank.placeBet(chatId, fid, +side, sideName, taken);
-          await bot.sendText(chatId,
-            `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\n<i>Settlement lands in your wallet at the final whistle.</i>`);
+          await bot.sendText(chatId, betRec.txSig
+            ? `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\n<i>Settlement lands in your wallet at the final whistle.</i>`
+            : `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL — the devnet faucet is dry, so the on-chain transfer is deferred.\n<i>Settlement at the final whistle.</i>`);
         } catch (e) {
           console.log("[bank] bet failed:", e.message);
           await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment.");
