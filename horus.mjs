@@ -125,29 +125,11 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return out.length > 12 ? [out[0], ...out.slice(1, -1).filter((_, i) => i % Math.ceil((out.length - 2) / 10) === 0), out[out.length - 1]] : out;
   }
 
-  // Build the full progressive timeline of a match from its archived ticks:
-  // kick-off, market shocks (goals/cards seen through the odds), periodic
-  // checkpoints, closing verdict. Each moment keeps its real timestamp so the
-  // replay can be paced at any speed.
+  // Build the progressive timeline of a match from its archived ticks:
+  // kick-off, market shocks (goals/cards seen through the odds), closing
+  // verdict. No filler — a message only ever means something happened.
   function buildTimeline(ticks, meta) {
-    const moments = keyMoments(ticks, meta);
-    // periodic market checkpoints between the key moments (every ~15 virtual minutes)
-    const inPlay = ticks.filter((t) => t.ir);
-    if (inPlay.length > 10) {
-      const start = inPlay[0].ts, end = inPlay[inPlay.length - 1].ts;
-      const step = (end - start) / 7;
-      for (let k = 1; k < 7; k++) {
-        const target = start + k * step;
-        const t = inPlay.reduce((a, b) => (Math.abs(b.ts - target) < Math.abs(a.ts - target) ? b : a));
-        const p = probOf(t);
-        const min = Math.round((t.ts - start) / 60000);
-        moments.push({ ts: t.ts, checkpoint: true,
-          txt: `⏱ ${min}' — market check: ${meta.home} ${pctS(p.home)} · Draw ${pctS(p.draw)} · ${meta.away} ${pctS(p.away)}` });
-      }
-    }
-    moments.sort((a, b) => a.ts - b.ts);
-    // drop checkpoints that land within 60s of a key moment
-    return moments.filter((m, i) => !m.checkpoint || !moments.some((o) => !o.checkpoint && Math.abs(o.ts - m.ts) < 60000));
+    return keyMoments(ticks, meta).sort((a, b) => a.ts - b.ts);
   }
 
   // Real score events (from the archived score states) rendered as broadcast lines
@@ -188,8 +170,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const ticks = loadTicksFor(fixtureId);
     if (!ticks || !ticks.length) { await bot.sendText(chatId, "No coverage available for that match — /matches for the rest."); return; }
     let moments = buildTimeline(ticks, meta);
-    let evMoments = eventMoments(events, meta);
-    if (durationSec <= 120) evMoments = evMoments.filter((m) => !m.minor); // quick mode: skip corners
+    const evMoments = eventMoments(events, meta);
     if (evMoments.length) {
       // real events take the lead: drop market-inferred shocks (they duplicate goals)
       moments = moments.filter((m) => !/💥|📉/.test(m.txt)).concat(evMoments);
