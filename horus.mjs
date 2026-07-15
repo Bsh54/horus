@@ -13,6 +13,19 @@ const DATA = join(__dirname, "data");
 
 const pctS = (p) => (Number.isFinite(p) ? (p * 100).toFixed(0) + "%" : "—");
 
+// phrase the 1X2 picture as a pundit sentence, not a data dump
+function marketPhrase(meta, p) {
+  if (!p || !Number.isFinite(p.home)) return "";
+  if (p.draw >= p.home && p.draw >= p.away)
+    return `The market leans towards a draw at ${pctS(p.draw)}, with ${meta.home} at ${pctS(p.home)} and ${meta.away} at ${pctS(p.away)}.`;
+  const fav = p.home >= p.away ? meta.home : meta.away;
+  const out = p.home >= p.away ? meta.away : meta.home;
+  const favP = Math.max(p.home, p.away), outP = Math.min(p.home, p.away);
+  if (favP - outP < 0.08)
+    return `The market can't split them — ${meta.home} ${pctS(p.home)}, ${meta.away} ${pctS(p.away)}, the draw ${pctS(p.draw)}.`;
+  return `The market makes ${fav} favourites at ${pctS(favP)}; ${out} are given ${pctS(outP)}, the draw ${pctS(p.draw)}.`;
+}
+
 export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   // per-fixture last known probabilities to phrase "before -> after"
   const probMem = new Map();
@@ -24,7 +37,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const p = getProbs(fixtureId);
     if (!p) return "";
     const meta = getMeta(fixtureId) || { home: "Home", away: "Away" };
-    return `Market now: ${meta.home} ${pctS(p.home)} · Draw ${pctS(p.draw)} · ${meta.away} ${pctS(p.away)}`;
+    return marketPhrase(meta, p);
   }
 
   function describe(fixtureId, ev) {
@@ -99,7 +112,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     let prev = null, kickoff = null;
     for (const t of ticks) {
       const p = probOf(t);
-      if (t.ir && kickoff == null) { kickoff = t.ts; out.push({ ts: t.ts, txt: `⏱ Kick-off! ${meta.home} vs ${meta.away}. Market: ${meta.home} ${pctS(p.home)} · Draw ${pctS(p.draw)} · ${meta.away} ${pctS(p.away)}` }); }
+      if (t.ir && kickoff == null) { kickoff = t.ts; out.push({ ts: t.ts, txt: `⏱ <b>We're underway — ${meta.home} against ${meta.away}.</b> ${marketPhrase(meta, p)}` }); }
       if (prev) {
         for (const side of ["home", "away", "draw"]) {
           const d = p[side] - prev[side];
@@ -119,7 +132,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     if (last) {
       const p = probOf(last);
       const winner = p.home > 0.8 ? meta.home : p.away > 0.8 ? meta.away : p.draw > 0.8 ? "a draw" : null;
-      if (winner) out.push({ ts: last.ts, txt: `🏁 <b>Full time.</b> ${winner === "a draw" ? "It ends level" : winner + " take it"}. Final market read: ${meta.home} ${pctS(p.home)} · Draw ${pctS(p.draw)} · ${meta.away} ${pctS(p.away)}` });
+      if (winner) out.push({ ts: last.ts, txt: `🏁 <b>Full time.</b> ${winner === "a draw" ? "It ends level" : winner + " take it"}.` });
     }
     // keep at most 12 moments
     return out.length > 12 ? [out[0], ...out.slice(1, -1).filter((_, i) => i % Math.ceil((out.length - 2) / 10) === 0), out[out.length - 1]] : out;
