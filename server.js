@@ -299,24 +299,86 @@ function liveContextFor(id) {
   return parts.join("\n");
 }
 
-const PAGE_SIZE = 15;
-async function sendMatchesPage(bot, chatId, rows, page = 0, editMsgId = null) {
-  const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-  page = Math.min(Math.max(0, page), pages - 1);
-  const slice = rows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
-  const kb = slice.map((r) => {
-    const cup = /world cup/i.test(r.meta.competition || "") ? "🏆 " : "";
-    const when = r.meta.startTime ? ` · ${new Date(r.meta.startTime).toISOString().slice(5, 10)}` : "";
-    return [{ text: `${cup}${r.meta.home} 🆚 ${r.meta.away}${when}`, callback_data: `pick:${r.id}` }];
+// Phase of a fixture as of *now* — works identically in live and demo mode
+// because the simulator drives scoreStates through the same pipeline.
+function phaseOfFixture(id) {
+  const st = scoreStates.get(Number(id));
+  if (st?.statusId === 10) return "finished";
+  if (st?.statusId >= 2) return "live";
+  const meta = metaOf(id);
+  if (meta?.startTime && new Date(meta.startTime).getTime() > Date.now()) return "upcoming";
+  if (st?.statusId === 1) return "upcoming";
+  return "finished"; // archived matches with no live state are /relive material
+}
+
+// Everything the bot can offer: streamed fixtures (live/upcoming) + archives.
+function allOfferedFixtures() {
+  const ids = new Set(catalog.filter((c) => hasArchive(c.id)).map((c) => c.id));
+  if (live) for (const id of live.allFixtureIds()) ids.add(Number(id));
+  return [...ids];
+}
+
+const PHASE_UI = {
+  live: { icon: "🔴", title: "LIVE NOW" },
+  upcoming: { icon: "🕒", title: "UPCOMING" },
+  finished: { icon: "🏁", title: "FINISHED" },
+};
+
+async function sendPhaseChooser(bot, chatId) {
+  const counts = { live: 0, upcoming: 0, finished: 0 };
+  for (const id of allOfferedFixtures()) counts[phaseOfFixture(id)]++;
+  const lang = users.langOf(chatId);
+  const [tLive, tUp, tFin] = await Promise.all([i18n.t("live_now", lang), i18n.t("upcoming", lang), i18n.t("finished", lang)]);
+  await bot.sendText(chatId, `⚽ <b>${await i18n.t("matches_menu", lang)}</b>`, {
+    reply_markup: { inline_keyboard: [
+      [{ text: `${tLive} (${counts.live})`, callback_data: "phase:live" }],
+      [{ text: `${tUp} (${counts.upcoming})`, callback_data: "phase:upcoming" }],
+      [{ text: `${tFin} (${counts.finished})`, callback_data: "phase:finished" }],
+    ] },
   });
-  const nav = [];
-  if (page > 0) nav.push({ text: "⬅️ Prev", callback_data: `pg:${page - 1}` });
+}
+
+const PAGE_SIZE = 10;
+function rowLabel(id, phase) {
+  const meta = metaOf(id) || { home: "Home", away: "Away" };
+  const st = scoreStates.get(Number(id));
+  if (phase === "live") {
+    const sc = st?.score ? `${st.score[0]}-${st.score[1]}` : "vs";
+    return `🔴 ${meta.home} ${sc} ${meta.away} · ${st?.minute ?? "?"}'`;
+  }
+  if (phase === "upcoming") {
+    const when = meta.startTime ? new Date(meta.startTime).toISOString().slice(11, 16) + " UTC" : "";
+    return `🕒 ${meta.home} 🆚 ${meta.away} · ${when}`;
+  }
+  const sc = st?.score ? ` ${st.score[0]}-${st.score[1]}` : "";
+  return `🏁 ${meta.home}${sc} ${meta.away}`;
+}
+
+async function sendMatchesPage(bot, chatId, phase, page = 0, editMsgId = null) {
+  const ids = allOfferedFixtures().filter((id) => phaseOfFixture(id) === phase);
+  // live first by minute desc, upcoming by kickoff asc, finished newest first
+  ids.sort((a, b) => {
+    if (phase === "upcoming") return new Date(metaOf(a)?.startTime || 0) - new Date(metaOf(b)?.startTime || 0);
+    return (scoreStates.get(Number(b))?.minute ?? 0) - (scoreStates.get(Number(a))?.minute ?? 0);
+  });
+  chatLists.set(String(chatId), ids); // keeps /follow N, /relive N, /verify N working
+  if (!ids.length) {
+    await sendT(bot, chatId, phase === "live" ? "Nothing is live right now — check 🕒 upcoming." : "Nothing here yet — try another section.");
+    return;
+  }
+  const pages = Math.max(1, Math.ceil(ids.length / PAGE_SIZE));
+  page = Math.min(Math.max(0, page), pages - 1);
+  const kb = ids.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+    .map((id) => [{ text: rowLabel(id, phase), callback_data: `pick:${phase}:${id}` }]);
+  const nav = [{ text: "« Sections", callback_data: "phase:menu" }];
+  if (page > 0) nav.push({ text: "⬅️", callback_data: `pg:${phase}:${page - 1}` });
   nav.push({ text: `${page + 1}/${pages}`, callback_data: "noop" });
-  if (page < pages - 1) nav.push({ text: "Next ➡️", callback_data: `pg:${page + 1}` });
+  if (page < pages - 1) nav.push({ text: "➡️", callback_data: `pg:${phase}:${page + 1}` });
   kb.push(nav);
-  const text = `⚽ <b>Match coverage</b> — ${rows.length} matches available. Tap one to watch.`;
+  const ui = PHASE_UI[phase];
+  const text = `${ui.icon} <b>${ui.title}</b> — ${ids.length} matches`;
   const extra = { reply_markup: { inline_keyboard: kb } };
-  if (editMsgId) await bot.editText(chatId, editMsgId, text, extra); // Prev/Next update the same bubble
+  if (editMsgId) await bot.editText(chatId, editMsgId, text, extra); // paging edits in place
   else await bot.sendText(chatId, text, extra);
 }
 
@@ -466,12 +528,9 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       if (users.isPremium(chatId)) await sendT(bot, chatId, "⭐ You're on <b>PREMIUM</b> — visual cards, unlimited AI, sharp-money alerts. Enjoy.");
       else await sendPlanPortal(bot, chatId);
       break;
-    case "/matches": {
-      const rows = listMatches();
-      if (!rows.length) { await bot.sendText(chatId, "The schedule is still loading — try again in a minute."); break; }
-      await sendMatchesPage(bot, chatId, rows, parseInt(arg, 10) || 0);
+    case "/matches":
+      await sendPhaseChooser(bot, chatId);
       break;
-    }
     case "/follow": {
       const rows = chatLists.get(String(chatId)) || listMatches().map((r) => r.id);
       const id = rows[parseInt(arg, 10) - 1];
@@ -522,13 +581,36 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       break;
     }
     default:
-      if (text.startsWith("pick:")) { // match tapped in the list
-        await sendSpeedChoice(bot, chatId, Number(text.split(":")[1]));
+      if (text === "phase:menu") { await sendPhaseChooser(bot, chatId); break; }
+      if (text.startsWith("phase:")) { // section chosen: live / upcoming / finished
+        await sendMatchesPage(bot, chatId, text.split(":")[1], 0, isCallback ? msgId : null);
         break;
       }
-      if (text.startsWith("pg:")) { // pagination in the match list — edit the list bubble in place
-        const rows = catalog.filter((c) => hasArchive(c.id)).map((c) => ({ id: c.id, meta: c }));
-        await sendMatchesPage(bot, chatId, rows, Number(text.split(":")[1]), isCallback ? msgId : null);
+      if (text.startsWith("pg:")) { // pagination — edit the list bubble in place
+        const [, phase, pg] = text.split(":");
+        await sendMatchesPage(bot, chatId, phase, Number(pg), isCallback ? msgId : null);
+        break;
+      }
+      if (text.startsWith("pick:")) { // match tapped: action depends on its phase
+        const [, phase, idRaw] = text.split(":");
+        const id = Number(idRaw ?? phase); // legacy pick:<id> still works
+        const realPhase = idRaw ? phase : phaseOfFixture(id);
+        if (realPhase === "finished" && hasArchive(id)) { await sendSpeedChoice(bot, chatId, id); break; }
+        bot.subscribe(chatId, id, name);
+        if (realPhase === "live") {
+          await sendT(bot, chatId, `🔔 Following <b>${matchLabel(id)}</b> — goals, cards and market moves as they happen.`);
+          await bot.sendText(chatId, liveContextFor(Number(id)));
+        } else if (realPhase === "upcoming") {
+          const meta = metaOf(id) || {};
+          const odds = live ? live.oddsFor(Number(id)) : null;
+          const when = meta.startTime ? new Date(meta.startTime).toISOString().slice(11, 16) + " UTC" : "soon";
+          await sendT(bot, chatId,
+            `🔔 Following <b>${matchLabel(id)}</b> — kick-off ${when}.` +
+            (odds ? `\nPre-match odds: ${odds.home} / ${odds.draw} / ${odds.away}` : "") +
+            `\nI'll ping you the moment it starts.`);
+        } else {
+          await sendT(bot, chatId, `🔔 Following <b>${matchLabel(id)}</b>.`);
+        }
         break;
       }
       if (text === "noop") break;
