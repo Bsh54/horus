@@ -435,10 +435,10 @@ async function runSession(bot, chatId, fid, speed = 5) {
   const sess = { stop: false, speed };
   playbacks.set(String(chatId), sess);
   const meta = metaOf(fid) || { home: "Home", away: "Away" };
-  await sendT(bot, chatId, `<b>${meta.home} vs ${meta.away} — you're watching.</b>\nYour own pace; nobody else is affected.`,
+  await sendT(bot, chatId, `<b>${meta.home} vs ${meta.away} — kick-off.</b>\nYour own match, at your own pace.`,
     { reply_markup: sessionControls(speed) });
-  // personal state cloned from the frozen anchor
-  const st = JSON.parse(JSON.stringify(scoreStates.get(Number(fid)) || blankMatchState()));
+  // the fan's match starts at 0-0, minute 0 — like every match should
+  const st = blankMatchState();
   let probs = null, prevProbs = null, prevTs = null;
   for (let i = tl.cursor; i < tl.msgs.length; i++) {
     const { ts, stream, msg } = tl.msgs[i];
@@ -703,26 +703,33 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         }
         const meta = metaOf(id) || { home: "Home", away: "Away" };
         const odds = (sim && sim.oddsFor(Number(id))) || (live && live.oddsFor(Number(id))) || null;
-        if (realPhase === "live") await bot.sendText(chatId, liveContextFor(Number(id)));
+        // no score spoilers: the fan's match starts from kick-off
+        const startRow = [
+          { text: "▶ x1", callback_data: `watch:${id}:1` },
+          { text: "▶ x5", callback_data: `watch:${id}:5` },
+          { text: "▶ x10", callback_data: `watch:${id}:10` },
+        ];
         if (bank && odds && !bank.hasOpenBet(chatId, id)) {
           await sendT(bot, chatId,
-            `<b>Take a position before you watch?</b>\n\n` +
-            `Odds straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet), settled at your final whistle.`,
+            `<b>${meta.home} vs ${meta.away}</b>\n\n` +
+            `Take a position before kick-off?\n` +
+            `Odds straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet), settled at your final whistle.\n\n` +
+            `<i>Or kick off at your pace:</i>`,
             { reply_markup: { inline_keyboard: [[
               { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${id}:0` },
               { text: `Draw @ ${odds.draw}`, callback_data: `bet:${id}:1` },
               { text: `${meta.away} @ ${odds.away}`, callback_data: `bet:${id}:2` },
-            ], [
-              { text: "▶ Watch", callback_data: `watch:${id}` },
-            ]] } });
+            ], startRow] } });
         } else {
-          await runSession(bot, chatId, id);
+          await sendT(bot, chatId, `<b>${meta.home} vs ${meta.away}</b>\n\nKick off at your pace:`,
+            { reply_markup: { inline_keyboard: [startRow] } });
         }
         break;
       }
       if (text === "noop") break;
-      if (text.startsWith("watch:")) { // skip the bet — start the personal playback
-        await runSession(bot, chatId, Number(text.split(":")[1]));
+      if (text.startsWith("watch:")) { // pace chosen — the fan's match kicks off
+        const [, fid, sp] = text.split(":");
+        await runSession(bot, chatId, Number(fid), Number(sp) || 5);
         break;
       }
       if (text.startsWith("spd:")) { // personal playback controls

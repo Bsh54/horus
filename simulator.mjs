@@ -97,7 +97,9 @@ export class TxSim extends TxLive {
         startTime: new Date(simKickoff).toISOString(),
         demoPhase: cfg.phase,
       });
-      this.matches.set(cfg.id, { cfg, msgs, cursor: 0, zero, offsetMs, startsInMs });
+      // kickIdx = first message of the match itself (personal playback start)
+      const kickIdx = Math.max(0, msgs.findIndex((x) => x.ts >= zero));
+      this.matches.set(cfg.id, { cfg, msgs, cursor: 0, zero, offsetMs, startsInMs, kickIdx });
     }
     this.onStatus({ state: "sim_started", fixtures: this.matches.size });
 
@@ -114,10 +116,10 @@ export class TxSim extends TxLive {
     return m.offsetMs; // live: frozen mid-match
   }
 
-  // Personal playback source: everything after the anchor, plus where to start.
+  // Personal playback source: the whole match from its own kick-off.
   timelineOf(fixtureId) {
     const m = this.matches.get(Number(fixtureId));
-    return m ? { msgs: m.msgs, cursor: m.cursor, zero: m.zero } : null;
+    return m ? { msgs: m.msgs, cursor: m.kickIdx, zero: m.zero } : null;
   }
 
   // Emit every message whose relative time <= horizon. During catchup the
