@@ -60,7 +60,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     } catch { return null; }
   }
 
-  const PUNDIT_PERSONA = "You are HORUS, a sharp, warm football pundit voice bot for World Cup fans. Reply in 1-3 short sentences, spoken style, no markdown, no emojis in voice lines. You know betting markets: probabilities come from real demargined odds. Never invent facts beyond the data given.";
+  const PUNDIT_PERSONA = "You are HORUS, a jovial, warm, funny football pundit — like an excited best friend watching the match with the fan. Talk casually, with energy and humour, 1-3 short sentences, spoken style, no markdown, no emojis in voice lines. You know betting markets inside out: probabilities come from real demargined odds. Never invent facts beyond the data given.";
 
   // ---------------------------------------------------------------------------
   // Narration templates (deterministic core)
@@ -180,25 +180,63 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return out.length > 12 ? [out[0], ...out.slice(1, -1).filter((_, i) => i % Math.ceil((out.length - 2) / 10) === 0), out[out.length - 1]] : out;
   }
 
-  const reliveRuns = new Map(); // chatId -> abort flag
-  async function relive(chatId, fixtureId, meta) {
-    const ticks = loadTicksFor(fixtureId);
-    if (!ticks || !ticks.length) { await bot.sendText(chatId, "No archive for that match yet."); return; }
+  // Build the full progressive timeline of a match from its archived ticks:
+  // kick-off, market shocks (goals/cards seen through the odds), periodic
+  // checkpoints, closing verdict. Each moment keeps its real timestamp so the
+  // replay can be paced at any speed.
+  function buildTimeline(ticks, meta) {
     const moments = keyMoments(ticks, meta);
-    if (!moments.length) { await bot.sendText(chatId, "That match has no market story to tell (market never opened)."); return; }
+    // periodic market checkpoints between the key moments (every ~15 virtual minutes)
+    const inPlay = ticks.filter((t) => t.ir);
+    if (inPlay.length > 10) {
+      const start = inPlay[0].ts, end = inPlay[inPlay.length - 1].ts;
+      const step = (end - start) / 7;
+      for (let k = 1; k < 7; k++) {
+        const target = start + k * step;
+        const t = inPlay.reduce((a, b) => (Math.abs(b.ts - target) < Math.abs(a.ts - target) ? b : a));
+        const p = probOf(t);
+        const min = Math.round((t.ts - start) / 60000);
+        moments.push({ ts: t.ts, checkpoint: true,
+          txt: `⏱ ${min}' — market check: ${meta.home} ${pctS(p.home)} · Draw ${pctS(p.draw)} · ${meta.away} ${pctS(p.away)}` });
+      }
+    }
+    moments.sort((a, b) => a.ts - b.ts);
+    // drop checkpoints that land within 60s of a key moment
+    return moments.filter((m, i) => !m.checkpoint || !moments.some((o) => !o.checkpoint && Math.abs(o.ts - m.ts) < 60000));
+  }
+
+  const reliveRuns = new Map(); // chatId -> abort flag
+  // durationSec: how long the fan wants the whole match to take
+  async function relive(chatId, fixtureId, meta, durationSec = 300) {
+    const ticks = loadTicksFor(fixtureId);
+    if (!ticks || !ticks.length) { await bot.sendText(chatId, "Ah, that one's not in my library yet! 😔 Try another — /matches"); return; }
+    const moments = buildTimeline(ticks, meta);
+    if (!moments.length) { await bot.sendText(chatId, "That match was so quiet even the market fell asleep 😴 Pick another one — /matches"); return; }
+    const span = Math.max(1, moments[moments.length - 1].ts - moments[0].ts);
+    const factor = span / (durationSec * 1000); // real ms per replay ms
     reliveRuns.set(String(chatId), { stop: false });
-    await bot.sendText(chatId, `🕰 <b>Reliving ${meta.home} vs ${meta.away}</b> — ${moments.length} key market moments, as if live. (/stopreplay to end)`);
+    await bot.sendText(chatId,
+      `🕰✨ <b>Time machine engaged: ${meta.home} 🆚 ${meta.away}</b>\n\nWhole match in ~${Math.round(durationSec / 60)} min (that's ×${Math.round(factor)} speed 🚀). Grab a drink, I'm commentating — you just enjoy!\n<i>(/stopreplay if you need to bail)</i>`);
+    let prevTs = moments[0].ts;
     for (const m of moments) {
-      if (reliveRuns.get(String(chatId))?.stop) break;
+      const wait = Math.min(60000, Math.max(800, (m.ts - prevTs) / factor));
+      await new Promise((r) => setTimeout(r, wait));
+      if (reliveRuns.get(String(chatId))?.stop) { reliveRuns.delete(String(chatId)); return; }
+      prevTs = m.ts;
       await bot.sendText(chatId, m.txt);
-      await new Promise((r) => setTimeout(r, 4500));
+      // the biggest swings also arrive as voice
+      if (!m.checkpoint && /💥/.test(m.txt)) {
+        const spoken = (await llm(PUNDIT_PERSONA, `Say this replay moment as a live pundit voice line: ${m.txt.replace(/<[^>]+>/g, "")}`))
+          || m.txt.replace(/[💥📉🏁⏱]/g, "");
+        const ogg = await tts(spoken, `relive-${chatId}-${Date.now()}`);
+        const sub = bot.subs.get(String(chatId));
+        if (ogg && (!sub || sub.voice !== false)) await bot.sendVoice(chatId, ogg);
+      }
     }
-    if (!reliveRuns.get(String(chatId))?.stop) {
-      const spoken = (await llm(PUNDIT_PERSONA, `Give a 2-sentence closing summary of this match market story:\n${moments.map((m) => m.txt).join("\n")}`))
-        || `And that is full time in ${meta.home} against ${meta.away}. What a story the market told.`;
-      const ogg = await tts(spoken, `relive-${chatId}-${Date.now()}`);
-      if (ogg) await bot.sendVoice(chatId, ogg);
-    }
+    const spoken = (await llm(PUNDIT_PERSONA, `Give a 2-sentence closing summary of this match market story:\n${moments.filter((m) => !m.checkpoint).map((m) => m.txt).join("\n")}`))
+      || `And that is full time in ${meta.home} against ${meta.away}. What a story the market told.`;
+    const ogg = await tts(spoken, `relive-${chatId}-${Date.now()}`);
+    if (ogg) await bot.sendVoice(chatId, ogg);
     reliveRuns.delete(String(chatId));
   }
 
@@ -207,7 +245,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   // ---------------------------------------------------------------------------
   async function ask(chatId, question, liveContext) {
     const answer = await llm(PUNDIT_PERSONA + " Answer the fan's question strictly from this live data:\n" + liveContext, question, 300);
-    await bot.sendText(chatId, answer || "My oracle brain is offline right now — but the live numbers above never lie. Try /live.");
+    await bot.sendText(chatId, answer || "My chatty brain is taking a nap right now 😴 — but the numbers never sleep! Try /live for the raw picture.");
   }
 
   return { notifyFollowers, rememberProbs, relive, ask, tts, llm,

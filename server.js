@@ -195,9 +195,25 @@ setInterval(() => {
 let horus = null;
 const chatLists = new Map(); // chatId -> last numbered match list
 
+// catalog of every fixture ever listed by the feed (gen-catalog.mjs) — the
+// replay library. Refreshed lazily on read.
+const CATALOG_FILE = join(DATA_DIR, "fixtures-catalog.json");
+let catalog = existsSync(CATALOG_FILE) ? JSON.parse(readFileSync(CATALOG_FILE, "utf8")) : [];
+const catalogById = () => new Map(catalog.map((c) => [c.id, c]));
+
+function metaOf(id) {
+  const c = catalogById().get(Number(id));
+  if (c) return { home: c.home, away: c.away, competition: c.competition, startTime: c.startTime };
+  return live ? live.metaFor(Number(id)) : null;
+}
+
 function matchLabel(id) {
-  const meta = live ? live.metaFor(id) : null;
+  const meta = metaOf(id);
   return meta ? `${meta.home} vs ${meta.away}` : `match ${id}`;
+}
+
+function hasArchive(id) {
+  return existsSync(join(DATA_DIR, "history", `t1x2-${id}.json.gz`));
 }
 
 function liveContextFor(id) {
@@ -217,59 +233,66 @@ async function botCommand({ chatId, text, from, bot }) {
   const [cmd, ...rest] = text.split(/\s+/);
   const arg = rest.join(" ");
   const listMatches = () => {
-    const ids = live ? live.allFixtureIds() : [];
-    const rows = ids.map((id) => ({ id, meta: live.metaFor(id) })).filter((r) => r.meta)
-      .sort((a, b) => (a.meta.startTime || 0) - (b.meta.startTime || 0));
+    // replay library: every World Cup match with an archive, newest first
+    const rows = catalog
+      .filter((c) => /world cup/i.test(c.competition) && hasArchive(c.id))
+      .slice(0, 40)
+      .map((c) => ({ id: c.id, meta: c }));
+    // plus whatever is currently on the live feed and not already listed
+    const listed = new Set(rows.map((r) => r.id));
+    for (const id of (live ? live.allFixtureIds() : [])) {
+      if (!listed.has(id) && live.metaFor(id)) rows.unshift({ id, meta: live.metaFor(id) });
+    }
     chatLists.set(String(chatId), rows.map((r) => r.id));
     return rows;
   };
   switch ((cmd || "").toLowerCase()) {
     case "/start":
       await bot.sendText(chatId,
-        `𓂀 <b>I am HORUS — the eye on every match.</b>\n\nI watch all World Cup matches and their betting markets at once, and I tell you the moment something matters: goals, red cards, and when the sharp money moves.\n\n<b>Commands</b>\n/matches — list matches\n/follow N — follow match N\n/followall — follow everything\n/live — current picture of followed matches\n/ask &lt;question&gt; — talk to me about a live match\n/relive N — replay a past match as if live 🕰\n/voice off|on — voice notes\n/unfollow — silence me`);
+        `𓂀 <b>Heyyy ${name}! I'm HORUS — your football buddy with the all-seeing eye.</b> 👁⚽\n\nI've watched EVERY match of this World Cup and I remember everything — every goal, every red card, every time the betting market lost its mind. 🤯\n\nPick any match, pick your speed, and I'll make you <b>live it again like it's happening RIGHT NOW</b> — with my voice notes and all. 🎙🔥\n\n<b>Let's go:</b>\n🕰 /matches — my match library\n🎬 /relive N — relive match N at YOUR speed\n💬 /ask — chat with me about any match\n\n<b>Extras:</b>\n🔔 /follow N · /followall — I ping you during live matches\n📊 /live — what's happening right now\n🎙 /voice off|on — my voice notes\n🤫 /unfollow — mute me (I'll be sad)`);
       break;
     case "/matches": {
       const rows = listMatches();
-      if (!rows.length) { await bot.sendText(chatId, "No matches on the feed right now."); break; }
-      await bot.sendText(chatId, "<b>Matches</b>\n" + rows.map((r, i) => {
+      if (!rows.length) { await bot.sendText(chatId, "Hmm, my library is loading — give me a minute and try again! 🙏"); break; }
+      await bot.sendText(chatId, "🍿 <b>My match library — pick one and let's relive it!</b>\n\n" + rows.map((r, i) => {
         const st = scoreStates.get(r.id);
-        const liveMark = st && st.statusId && st.statusId !== 10 && PHASES[st.statusId] ? " 🔴" : "";
-        const when = r.meta.startTime ? new Date(r.meta.startTime).toISOString().slice(5, 16).replace("T", " ") : "";
-        return `${i + 1}. ${r.meta.home} vs ${r.meta.away} — ${when} UTC${liveMark}`;
-      }).join("\n") + "\n\n/follow N · /relive N");
+        const liveMark = st && st.statusId && st.statusId !== 10 && PHASES[st.statusId] ? " 🔴 LIVE NOW" : "";
+        const when = r.meta.startTime ? new Date(r.meta.startTime).toISOString().slice(5, 10) : "";
+        return `${i + 1}. ${r.meta.home} 🆚 ${r.meta.away} <i>(${when})</i>${liveMark}`;
+      }).join("\n") + "\n\n👉 /relive N to time-travel · /follow N for live pings");
       break;
     }
     case "/follow": {
       const rows = chatLists.get(String(chatId)) || listMatches().map((r) => r.id);
       const id = rows[parseInt(arg, 10) - 1];
-      if (!id) { await bot.sendText(chatId, "Use /matches then /follow N."); break; }
+      if (!id) { await bot.sendText(chatId, "Oops! 😅 Do /matches first, then /follow N (the number in the list)."); break; }
       bot.subscribe(chatId, id, name);
-      await bot.sendText(chatId, `𓂀 Following <b>${matchLabel(id)}</b>. I will speak when it matters.`);
+      await bot.sendText(chatId, `🔔 Deal, ${name}! I've got my eye on <b>${matchLabel(id)}</b> for you. The SECOND something big happens — goal, red card, market panic — you'll hear from me. 𓂀⚡`);
       break;
     }
     case "/followall":
       bot.subscribe(chatId, "all", name);
-      await bot.sendText(chatId, "𓂀 I will tell you about <b>every match</b> on the feed.");
+      await bot.sendText(chatId, "🔥 Bold choice! I'm now watching <b>EVERY match</b> for you. Buckle up — when the World Cup speaks, you'll be the first to know. 𓂀");
       break;
     case "/unfollow":
       bot.unsubscribe(chatId);
-      await bot.sendText(chatId, "Silenced. /follow when you miss me.");
+      await bot.sendText(chatId, "😢 Okay okay, going quiet... You know where to find me when you miss the action: /matches");
       break;
     case "/voice":
       bot.setVoice(chatId, arg !== "off");
-      await bot.sendText(chatId, arg === "off" ? "Voice notes off." : "Voice notes on.");
+      await bot.sendText(chatId, arg === "off" ? "🤐 Voice notes off — text only, got it!" : "🎙 Voice notes ON — you'll love my commentary voice 😄");
       break;
     case "/live": {
       const subs = bot.subs.get(String(chatId));
       const ids = subs ? (subs.follows[0] === "all" ? (live ? live.allFixtureIds() : []) : subs.follows) : [];
       const active = ids.filter((id) => scoreStates.get(Number(id))?.statusId && scoreStates.get(Number(id)).statusId !== 10);
       const shown = (active.length ? active : ids).slice(0, 5);
-      if (!shown.length) { await bot.sendText(chatId, "You follow nothing yet — /matches."); break; }
+      if (!shown.length) { await bot.sendText(chatId, "You're not following anything yet, my friend! 😄 Do /matches and pick one."); break; }
       for (const id of shown) await bot.sendText(chatId, liveContextFor(Number(id)));
       break;
     }
     case "/ask": {
-      if (!arg) { await bot.sendText(chatId, "Ask me something: /ask who is winning?"); break; }
+      if (!arg) { await bot.sendText(chatId, "Go ahead, ask me anything! ⚽ Like: /ask who's winning? or /ask what does the market think of England?"); break; }
       const subs = bot.subs.get(String(chatId));
       const ids = subs ? (subs.follows[0] === "all" ? (live ? live.allFixtureIds() : []) : subs.follows) : (live ? live.allFixtureIds() : []);
       const ctx = ids.slice(0, 6).map((id) => liveContextFor(Number(id))).join("\n---\n");
@@ -279,16 +302,29 @@ async function botCommand({ chatId, text, from, bot }) {
     case "/relive": {
       const rows = chatLists.get(String(chatId)) || listMatches().map((r) => r.id);
       const id = rows[parseInt(arg, 10) - 1];
-      if (!id) { await bot.sendText(chatId, "Use /matches then /relive N."); break; }
-      horus.relive(chatId, id, live.metaFor(id) || { home: "Home", away: "Away" });
+      if (!id) { await bot.sendText(chatId, "Almost! 😄 Do /matches first, then /relive N with the match number."); break; }
+      await bot.sendText(chatId, `🕰 Ohh, <b>${matchLabel(id)}</b> — great pick! 👌\n\nHow do you want to live it?`, {
+        reply_markup: { inline_keyboard: [[
+          { text: "⚡ Espresso (2 min)", callback_data: `rl:${id}:120` },
+          { text: "🎬 Highlights (5 min)", callback_data: `rl:${id}:300` },
+        ], [
+          { text: "🍿 Settle in (10 min)", callback_data: `rl:${id}:600` },
+        ]] },
+      });
       break;
     }
     case "/stopreplay":
       horus.stopReplay(chatId);
-      await bot.sendText(chatId, "Replay stopped.");
+      await bot.sendText(chatId, "⏹ Replay stopped! No worries — the library never closes: /matches 😉");
       break;
     default:
-      if (text.startsWith("/")) await bot.sendText(chatId, "Unknown command — /start for the list.");
+      if (text.startsWith("rl:")) { // speed chosen from the inline keyboard
+        const [, fid, sec] = text.split(":");
+        horus.stopReplay(chatId);
+        horus.relive(chatId, Number(fid), metaOf(fid) || { home: "Home", away: "Away" }, Number(sec));
+        break;
+      }
+      if (text.startsWith("/")) await bot.sendText(chatId, "Hmm, I don't know that one! 😅 /start shows everything I can do.");
       else { // free text = conversation
         const ids = live ? live.allFixtureIds() : [];
         const ctx = ids.slice(0, 6).map((id) => liveContextFor(Number(id))).join("\n---\n");
