@@ -151,6 +151,15 @@ export function buildEventJob(ev, ctx) {
       statVal: `${(state?.yellow || [0, 0])[0]} - ${(state?.yellow || [0, 0])[1]}`,
       statColor: "yellow",
     };
+    case "foul": return {
+      ...common, kind: "mini", badge: texts.foul || "FOUL", badgeColor: "muted", badgeFg: "fg",
+      title: ev.title || (texts.foul || "Foul"),
+      subtitle: ev.subtitle || "",
+      player: ev.player,
+      statLabel: texts.fouls || "Fouls",
+      statVal: ev.foulCount ? `${ev.foulCount[0]} - ${ev.foulCount[1]}` : "",
+      statColor: "muted_fg",
+    };
     case "corner": return {
       ...common, kind: "mini", badge: texts.corner || "CORNER", badgeColor: "gold_deep",
       title: ev.title || (texts.corner || "Corner"),

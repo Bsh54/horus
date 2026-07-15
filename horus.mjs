@@ -96,7 +96,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   // Demo enrichment: TxLINE streams are team-level, but for replayed matches
   // the play-by-play archive names the scorer — find the play matching the
   // new score and pull the player (name + pre-fetched Wikimedia portrait).
-  function playerFromPbp(fixtureId, kind, score) {
+  function playerFromPbp(fixtureId, kind, score, minute = null) {
     try {
       const pbp = loadPbp(fixtureId);
       if (!pbp?.plays) return null;
@@ -107,6 +107,12 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       } else if (kind === "red") {
         const play = pbp.plays.findLast((p) => /Red Card/i.test(p.type || ""));
         name = play?.text?.match(/^([\p{Lu}][\p{L}'.-]+(?: [\p{Lu}][\p{L}'.-]+){0,3}) \(/u)?.[1] || null;
+      } else if (kind === "yellow" && minute != null) {
+        // the booking closest to the current playback minute
+        const cands = pbp.plays.filter((p) => p.type === "Yellow Card" && p.min != null);
+        const play = cands.sort((a, b) => Math.abs(a.min - minute) - Math.abs(b.min - minute))[0];
+        if (play && Math.abs(play.min - minute) <= 3)
+          name = play.text?.match(/^([\p{Lu}][\p{L}'.-]+(?: [\p{Lu}][\p{L}'.-]+){0,3}) \(/u)?.[1] || null;
       }
       if (!name) return null;
       return { name, photo: playerPhoto(name), halo: kind === "goal", desat: kind === "red" ? 0.4 : 0 };
@@ -445,18 +451,79 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     } catch (e) { console.log("[cards] replay render failed:", e.message); return false; }
   }
 
+  // Mini cards (the designed m-series): yellow, corner, foul.
+  async function sendMiniCard(chatId, fixtureId, meta, ev, { st, lang, team }) {
+    try {
+      const texts = {};
+      for (const k of ["yellow_card", "corner", "cards", "corners"]) texts[k] = (await tKey(k, lang)).toUpperCase();
+      const evx = { ...ev };
+      if (ev.kind === "yellow") {
+        const p = playerFromPbp(fixtureId, "yellow", null, st.minute);
+        evx.title = p?.name || `${term("yellow_cards", lang)} — ${team}`;
+        evx.subtitle = p?.name ? `${term("yellow_cards", lang)} — ${team}` : "";
+        texts.yellow_card = term("yellow_cards", lang).toUpperCase();
+        texts.cards = term("yellow_cards", lang);
+      } else if (ev.kind === "corner") {
+        const n = (st.corners || [0, 0])[ev.isHome ? 0 : 1];
+        evx.title = `${term("corners", lang)} — ${team}`;
+        evx.subtitle = await translate(`Corner number ${n} for ${team}.`, lang);
+        texts.corner = term("corners", lang).toUpperCase();
+        texts.corners = term("corners", lang);
+      } else if (ev.kind === "foul") {
+        evx.kind = "foul";
+        evx.title = ev.player || `${term("fouls", lang)} — ${team}`;
+        evx.subtitle = `${term("fouls", lang)} — ${team}`;
+        texts.foul = term("fouls", lang).toUpperCase();
+        texts.fouls = term("fouls", lang);
+        evx.foulCount = ev.fouls;
+      }
+      if (evx.title && playerPhoto(evx.title)) evx.player = { name: evx.title, photo: playerPhoto(evx.title) };
+      else if (ev.kind === "yellow" && evx.title && !evx.title.includes("—")) evx.player = { name: evx.title, photo: playerPhoto(evx.title) };
+      const job = buildEventJob(evx, { meta, state: st, probs: null, prevProbs: null, odds: null, texts });
+      if (!job) return;
+      const png = await renderCard(`m-${fixtureId}-${ev.kind}-${st.minute ?? "x"}-${(st.corners || []).join("")}-${(st.yellow || []).join("")}-${lang}`, job);
+      await bot.sendPhoto(chatId, png);
+    } catch (e) { console.log("[cards] mini render failed:", e.message); }
+  }
+
+  // Selected fouls of a match for playback decoration: TxLINE carries no foul
+  // stat, so the play-by-play provides them — sampled down to the meaningful
+  // ones (max 6 per match), with running foul counts per side.
+  function foulMoments(fixtureId) {
+    const pbp = loadPbp(fixtureId);
+    if (!pbp?.plays) return [];
+    const meta = getMeta(fixtureId) || { home: "", away: "" };
+    const all = [];
+    const count = [0, 0];
+    for (const p of pbp.plays) {
+      if (p.type !== "Foul" || p.min == null || !/Foul by/.test(p.text || "")) continue;
+      const team = String(p.text).match(/\(([^)]+)\)/)?.[1] || "";
+      const isHome = String(meta.home).toLowerCase().includes(team.toLowerCase().split(" ")[0]);
+      count[isHome ? 0 : 1]++;
+      all.push({ min: p.min, isHome, player: String(p.text).match(/^Foul by ([^(]+?)\s*\(/)?.[1] || null, fouls: [...count] });
+    }
+    if (all.length <= 6) return all;
+    const step = Math.ceil(all.length / 6);
+    return all.filter((_, i) => i % step === 0).slice(0, 6);
+  }
+
   // One event of a PERSONAL playback session: instant text ping, then the
   // visual card — both to a single chat, in the fan's language.
   async function personalEvent(chatId, fixtureId, meta, ev, { st, probs, prevProbs }) {
     const lang = langOf(chatId);
     const score = `${st.score[0]}-${st.score[1]}`;
     const min = st.minute != null ? `${st.minute}'` : "";
+    const team = ev.isHome ? meta.home : meta.away;
+    // small events: one mini card, no text ping (the designed m-cards)
+    if (ev.kind === "yellow" || ev.kind === "corner" || ev.kind === "foul") {
+      return sendMiniCard(chatId, fixtureId, meta, ev, { st, lang, team });
+    }
     let head = "";
-    if (ev.kind === "goal") head = `⚽ GOAL — ${ev.isHome ? meta.home : meta.away}! ${meta.home} ${score} ${meta.away} (${min})`;
-    else if (ev.kind === "red") head = `🟥 RED CARD — ${ev.isHome ? meta.home : meta.away} (${min}), ${score}`;
-    else if (ev.kind === "period") head = `⏱ ${ev.text} — ${meta.home} ${score} ${meta.away}`;
+    if (ev.kind === "goal") head = `⚽ ${term("goal", lang)} — ${team}! ${meta.home} ${score} ${meta.away} (${min})`;
+    else if (ev.kind === "red") head = `🟥 ${term("red_cards", lang).toUpperCase()} — ${team} (${min}), ${score}`;
+    else if (ev.kind === "period") head = `⏱ ${await translate(ev.text, lang)} — ${meta.home} ${score} ${meta.away}`;
     if (!head) return;
-    await bot.sendText(chatId, await translate(head, lang));
+    await bot.sendText(chatId, head);
     let kind = ev.kind === "goal" ? "goal" : ev.kind === "red" ? "red" : null;
     if (ev.kind === "period" && /full time|finished/i.test(ev.text || "")) kind = "fulltime";
     else if (ev.kind === "period" && /1st half/i.test(ev.text || "")) kind = "kickoff";
@@ -687,6 +754,6 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return null;
   }
 
-  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, announceUpcoming, preMatchOdds, finalResultOf, ask,
+  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, announceUpcoming, foulMoments, preMatchOdds, finalResultOf, ask,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }

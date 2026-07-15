@@ -418,12 +418,25 @@ function stopSession(chatId) {
   playbacks.delete(String(chatId));
 }
 
+// Pace choice, one dedicated step: x2, x5, then Normal — per his spec.
+const PACE_LABEL = (n) => (n === 1 ? "Normal" : `x${n}`);
+async function sendPaceChooser(bot, chatId, id) {
+  const meta = metaOf(id) || { home: "Home", away: "Away" };
+  await sendT(bot, chatId, `<b>${meta.home} vs ${meta.away}</b>\n\nChoose your pace:`, {
+    reply_markup: { inline_keyboard: [[
+      { text: "x2", callback_data: `watch:${id}:2` },
+      { text: "x5", callback_data: `watch:${id}:5` },
+      { text: "Normal", callback_data: `watch:${id}:1` },
+    ]] },
+  });
+}
+
 function sessionControls(speed) {
-  const mark = (n) => (speed === n ? `· x${n} ·` : `x${n}`);
+  const mark = (n) => (speed === n ? `· ${PACE_LABEL(n)} ·` : PACE_LABEL(n));
   return { inline_keyboard: [[
-    { text: mark(1), callback_data: "spd:1" },
+    { text: mark(2), callback_data: "spd:2" },
     { text: mark(5), callback_data: "spd:5" },
-    { text: mark(10), callback_data: "spd:10" },
+    { text: mark(1), callback_data: "spd:1" },
     { text: "⏹", callback_data: "spd:stop" },
   ]] };
 }
@@ -439,6 +452,8 @@ async function runSession(bot, chatId, fid, speed = 5) {
     { reply_markup: sessionControls(speed) });
   // the fan's match starts at 0-0, minute 0 — like every match should
   const st = blankMatchState();
+  const fouls = horus.foulMoments(Number(fid)); // pbp decoration, pre-sampled
+  let nextFoul = 0;
   let probs = null, prevProbs = null, prevTs = null;
   for (let i = tl.cursor; i < tl.msgs.length; i++) {
     const { ts, stream, msg } = tl.msgs[i];
@@ -468,7 +483,17 @@ async function runSession(bot, chatId, fid, speed = 5) {
     if (st.score[1] > prev.score[1]) evs.push({ kind: "goal", isHome: false });
     if (st.red[0] > prev.red[0]) evs.push({ kind: "red", isHome: true });
     if (st.red[1] > prev.red[1]) evs.push({ kind: "red", isHome: false });
+    if (st.yellow[0] > prev.yellow[0]) evs.push({ kind: "yellow", isHome: true });
+    if (st.yellow[1] > prev.yellow[1]) evs.push({ kind: "yellow", isHome: false });
+    if (st.corners[0] > prev.corners[0]) evs.push({ kind: "corner", isHome: true });
+    if (st.corners[1] > prev.corners[1]) evs.push({ kind: "corner", isHome: false });
     if (st.statusId !== prev.statusId && PHASES[st.statusId]) evs.push({ kind: "period", text: PHASES[st.statusId] });
+    // fouls aren't in the TxLINE stats — decorate from the play-by-play as
+    // the clock passes each selected foul minute
+    while (nextFoul < fouls.length && st.minute != null && st.minute >= fouls[nextFoul].min) {
+      evs.push({ kind: "foul", ...fouls[nextFoul] });
+      nextFoul++;
+    }
     for (const ev of evs) {
       await horus.personalEvent(chatId, Number(fid), meta, ev, { st, probs, prevProbs }).catch((e) => console.log("[session]", e.message));
       if (sess.stop) return;
@@ -717,33 +742,32 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
           }
           break;
         }
-        // live: no score spoilers — the fan's match starts from kick-off
-        const startRow = [
-          { text: "▶ x1", callback_data: `watch:${id}:1` },
-          { text: "▶ x5", callback_data: `watch:${id}:5` },
-          { text: "▶ x10", callback_data: `watch:${id}:10` },
-        ];
+        // live: one step at a time — 1. the match, 2. the position, 3. the pace
         if (bank && odds && !bank.hasOpenBet(chatId, id)) {
           await sendT(bot, chatId,
             `<b>${meta.home} vs ${meta.away}</b>\n\n` +
             `Take a position before kick-off?\n` +
-            `Odds straight from the feed. Stake ${bank.STAKE_SOL} SOL (devnet), settled at your final whistle.\n\n` +
-            `<i>Or kick off at your pace:</i>`,
+            `Stake ${bank.STAKE_SOL} SOL (devnet), settled at your final whistle.`,
             { reply_markup: { inline_keyboard: [[
               { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${id}:0` },
               { text: `Draw @ ${odds.draw}`, callback_data: `bet:${id}:1` },
               { text: `${meta.away} @ ${odds.away}`, callback_data: `bet:${id}:2` },
-            ], startRow] } });
+            ], [
+              { text: "No bet", callback_data: `nobet:${id}` },
+            ]] } });
         } else {
-          await sendT(bot, chatId, `<b>${meta.home} vs ${meta.away}</b>\n\nKick off at your pace:`,
-            { reply_markup: { inline_keyboard: [startRow] } });
+          await sendPaceChooser(bot, chatId, id);
         }
         break;
       }
       if (text === "noop") break;
+      if (text.startsWith("nobet:")) { // no position — straight to the pace step
+        await sendPaceChooser(bot, chatId, Number(text.split(":")[1]));
+        break;
+      }
       if (text.startsWith("watch:")) { // pace chosen — the fan's match kicks off
         const [, fid, sp] = text.split(":");
-        await runSession(bot, chatId, Number(fid), Number(sp) || 5);
+        await runSession(bot, chatId, Number(fid), Number(sp) || 1);
         break;
       }
       if (text.startsWith("spd:")) { // personal playback controls
@@ -751,7 +775,7 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         const sess = playbacks.get(String(chatId));
         if (!sess) { await sendT(bot, chatId, "No match playing — /matches to open one."); break; }
         if (v === "stop") { stopSession(chatId); await sendT(bot, chatId, "Stopped. /matches when you want back in."); break; }
-        sess.speed = Math.min(20, Math.max(1, Number(v) || 5));
+        sess.speed = Math.min(20, Math.max(1, Number(v) || 1));
         if (isCallback) await bot.call("editMessageReplyMarkup", { chat_id: chatId, message_id: msgId, reply_markup: sessionControls(sess.speed) });
         break;
       }
@@ -770,9 +794,9 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
           await bot.sendText(chatId, betRec.txSig
             ? `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\n<i>Settlement lands in your wallet at the final whistle.</i>`
             : `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL — the devnet faucet is dry, so the on-chain transfer is deferred.\n<i>Settlement at the final whistle.</i>`);
-          // live match: position taken — their playback kicks off. Upcoming
-          // matches just hold the position; no playback before kick-off.
-          if (isDemoFixture(fid) && phaseOfFixture(fid) === "live") await runSession(bot, chatId, Number(fid));
+          // live match: position taken — next step is the pace choice.
+          // Upcoming matches just hold the position until kick-off.
+          if (isDemoFixture(fid) && phaseOfFixture(fid) === "live") await sendPaceChooser(bot, chatId, Number(fid));
         } catch (e) {
           console.log("[bank] bet failed:", e.message);
           await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment.");
