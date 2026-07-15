@@ -174,7 +174,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     if (last) {
       const p = probOf(last);
       const winner = p.home > 0.8 ? meta.home : p.away > 0.8 ? meta.away : p.draw > 0.8 ? "a draw" : null;
-      if (winner) out.push({ ts: last.ts, txt: `🏁 Closing market: ${winner} ${winner === "a draw" ? "was" : "won"} — final probabilities ${meta.home} ${pctS(p.home)} · Draw ${pctS(p.draw)} · ${meta.away} ${pctS(p.away)}` });
+      if (winner) out.push({ ts: last.ts, txt: `🏁 <b>FULL TIME!</b> ${winner === "a draw" ? "It ends level" : winner + " take it"}! Final market read: ${meta.home} ${pctS(p.home)} · Draw ${pctS(p.draw)} · ${meta.away} ${pctS(p.away)} — what a watch! 🙌` });
     }
     // keep at most 12 moments
     return out.length > 12 ? [out[0], ...out.slice(1, -1).filter((_, i) => i % Math.ceil((out.length - 2) / 10) === 0), out[out.length - 1]] : out;
@@ -216,7 +216,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const factor = span / (durationSec * 1000); // real ms per replay ms
     reliveRuns.set(String(chatId), { stop: false });
     await bot.sendText(chatId,
-      `🕰✨ <b>Time machine engaged: ${meta.home} 🆚 ${meta.away}</b>\n\nWhole match in ~${Math.round(durationSec / 60)} min (that's ×${Math.round(factor)} speed 🚀). Grab a drink, I'm commentating — you just enjoy!\n<i>(/stopreplay if you need to bail)</i>`);
+      `🔴 <b>WE'RE LIVE — ${meta.home} 🆚 ${meta.away}!</b> 🏟\n\nI'm your eyes on the pitch AND on the market. Grab a drink, I'm commentating — you just enjoy! 🍹\n<i>(/stopreplay to leave the match)</i>`);
     let prevTs = moments[0].ts;
     for (const m of moments) {
       const wait = Math.min(60000, Math.max(800, (m.ts - prevTs) / factor));

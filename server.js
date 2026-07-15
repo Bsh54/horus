@@ -228,6 +228,17 @@ function liveContextFor(id) {
   return parts.join("\n");
 }
 
+async function sendSpeedChoice(bot, chatId, id) {
+  await bot.sendText(chatId, `🔴 <b>${matchLabel(id)}</b> — we're going in! 🎉\n\nHow do you want to watch it?`, {
+    reply_markup: { inline_keyboard: [[
+      { text: "⚡ Quick match (2 min)", callback_data: `rl:${id}:120` },
+      { text: "🎬 Classic (5 min)", callback_data: `rl:${id}:300` },
+    ], [
+      { text: "🍿 Full experience (10 min)", callback_data: `rl:${id}:600` },
+    ]] },
+  });
+}
+
 async function botCommand({ chatId, text, from, bot }) {
   const name = from.first_name || from.username || "fan";
   const [cmd, ...rest] = text.split(/\s+/);
@@ -249,17 +260,18 @@ async function botCommand({ chatId, text, from, bot }) {
   switch ((cmd || "").toLowerCase()) {
     case "/start":
       await bot.sendText(chatId,
-        `𓂀 <b>Heyyy ${name}! I'm HORUS — your football buddy with the all-seeing eye.</b> 👁⚽\n\nI've watched EVERY match of this World Cup and I remember everything — every goal, every red card, every time the betting market lost its mind. 🤯\n\nPick any match, pick your speed, and I'll make you <b>live it again like it's happening RIGHT NOW</b> — with my voice notes and all. 🎙🔥\n\n<b>Let's go:</b>\n🕰 /matches — my match library\n🎬 /relive N — relive match N at YOUR speed\n💬 /ask — chat with me about any match\n\n<b>Extras:</b>\n🔔 /follow N · /followall — I ping you during live matches\n📊 /live — what's happening right now\n🎙 /voice off|on — my voice notes\n🤫 /unfollow — mute me (I'll be sad)`);
+        `𓂀 <b>Heyyy ${name}! I'm HORUS — your football buddy with the all-seeing eye.</b> 👁⚽\n\nWelcome to <b>HORUS TV</b>: I broadcast World Cup matches right here in Telegram. Pick a match, pick your pace, and we watch it together — goals, red cards, market drama, my voice notes and all. 🎙🔥\n\n<b>Let's go:</b>\n⚽ /matches — what's on, tap and watch\n💬 /ask — chat with me about any match\n\n<b>Extras:</b>\n📊 /live — the picture right now\n🎙 /voice off|on — my voice notes\n⏹ /stopreplay — leave the match\n🤫 /unfollow — mute me (I'll be sad)`);
       break;
     case "/matches": {
       const rows = listMatches();
-      if (!rows.length) { await bot.sendText(chatId, "Hmm, my library is loading — give me a minute and try again! 🙏"); break; }
-      await bot.sendText(chatId, "🍿 <b>My match library — pick one and let's relive it!</b>\n\n" + rows.map((r, i) => {
-        const st = scoreStates.get(r.id);
-        const liveMark = st && st.statusId && st.statusId !== 10 && PHASES[st.statusId] ? " 🔴 LIVE NOW" : "";
-        const when = r.meta.startTime ? new Date(r.meta.startTime).toISOString().slice(5, 10) : "";
-        return `${i + 1}. ${r.meta.home} 🆚 ${r.meta.away} <i>(${when})</i>${liveMark}`;
-      }).join("\n") + "\n\n👉 /relive N to time-travel · /follow N for live pings");
+      if (!rows.length) { await bot.sendText(chatId, "Hmm, the schedule is loading — give me a minute and try again! 🙏"); break; }
+      // tap-to-watch: one button per match, no numbers to type
+      const top = rows.slice(0, 12);
+      await bot.sendText(chatId, "⚽ <b>Matches on HORUS TV — tap one and we watch it together!</b> 🔴", {
+        reply_markup: { inline_keyboard: top.map((r) => ([{
+          text: `${r.meta.home} 🆚 ${r.meta.away}`, callback_data: `pick:${r.id}`,
+        }])) },
+      });
       break;
     }
     case "/follow": {
@@ -299,18 +311,12 @@ async function botCommand({ chatId, text, from, bot }) {
       await horus.ask(chatId, arg, ctx || "no live data right now");
       break;
     }
-    case "/relive": {
+    case "/relive":
+    case "/watch": {
       const rows = chatLists.get(String(chatId)) || listMatches().map((r) => r.id);
       const id = rows[parseInt(arg, 10) - 1];
-      if (!id) { await bot.sendText(chatId, "Almost! 😄 Do /matches first, then /relive N with the match number."); break; }
-      await bot.sendText(chatId, `🕰 Ohh, <b>${matchLabel(id)}</b> — great pick! 👌\n\nHow do you want to live it?`, {
-        reply_markup: { inline_keyboard: [[
-          { text: "⚡ Espresso (2 min)", callback_data: `rl:${id}:120` },
-          { text: "🎬 Highlights (5 min)", callback_data: `rl:${id}:300` },
-        ], [
-          { text: "🍿 Settle in (10 min)", callback_data: `rl:${id}:600` },
-        ]] },
-      });
+      if (!id) { await botCommand({ chatId, text: "/matches", from, bot }); break; } // no number? show the tappable list
+      await sendSpeedChoice(bot, chatId, id);
       break;
     }
     case "/stopreplay":
@@ -318,7 +324,11 @@ async function botCommand({ chatId, text, from, bot }) {
       await bot.sendText(chatId, "⏹ Replay stopped! No worries — the library never closes: /matches 😉");
       break;
     default:
-      if (text.startsWith("rl:")) { // speed chosen from the inline keyboard
+      if (text.startsWith("pick:")) { // match tapped in the list
+        await sendSpeedChoice(bot, chatId, Number(text.split(":")[1]));
+        break;
+      }
+      if (text.startsWith("rl:")) { // pace chosen from the inline keyboard
         const [, fid, sec] = text.split(":");
         horus.stopReplay(chatId);
         horus.relive(chatId, Number(fid), metaOf(fid) || { home: "Home", away: "Away" }, Number(sec));
