@@ -703,7 +703,21 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         }
         const meta = metaOf(id) || { home: "Home", away: "Away" };
         const odds = (sim && sim.oddsFor(Number(id))) || (live && live.oddsFor(Number(id))) || null;
-        // no score spoilers: the fan's match starts from kick-off
+        if (realPhase === "upcoming") {
+          // one announcement card — kick-off time, crests, pre-match odds.
+          // No playback here: the match hasn't started.
+          await horus.announceUpcoming(chatId, Number(id), meta, odds);
+          if (bank && odds && !bank.hasOpenBet(chatId, id)) {
+            await sendT(bot, chatId, `<b>Take a position before kick-off?</b>\nStake ${bank.STAKE_SOL} SOL (devnet).`,
+              { reply_markup: { inline_keyboard: [[
+                { text: `${meta.home} @ ${odds.home}`, callback_data: `bet:${id}:0` },
+                { text: `Draw @ ${odds.draw}`, callback_data: `bet:${id}:1` },
+                { text: `${meta.away} @ ${odds.away}`, callback_data: `bet:${id}:2` },
+              ]] } });
+          }
+          break;
+        }
+        // live: no score spoilers — the fan's match starts from kick-off
         const startRow = [
           { text: "▶ x1", callback_data: `watch:${id}:1` },
           { text: "▶ x5", callback_data: `watch:${id}:5` },
@@ -756,7 +770,9 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
           await bot.sendText(chatId, betRec.txSig
             ? `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL staked on Solana devnet — <a href="${bank.explorer(betRec.txSig)}">view the transaction</a>.\n<i>Settlement lands in your wallet at the final whistle.</i>`
             : `<b>Position taken: ${sideName} @ ${taken}</b>\n\n${betRec.stake} SOL — the devnet faucet is dry, so the on-chain transfer is deferred.\n<i>Settlement at the final whistle.</i>`);
-          if (isDemoFixture(fid)) await runSession(bot, chatId, Number(fid)); // position taken — the match starts for them
+          // live match: position taken — their playback kicks off. Upcoming
+          // matches just hold the position; no playback before kick-off.
+          if (isDemoFixture(fid) && phaseOfFixture(fid) === "live") await runSession(bot, chatId, Number(fid));
         } catch (e) {
           console.log("[bank] bet failed:", e.message);
           await bot.sendText(chatId, "Couldn't reach Solana devnet — try again in a moment.");

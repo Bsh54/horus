@@ -488,6 +488,34 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     } catch (e) { console.log("[cards] personal render failed:", e.message); }
   }
 
+  // Upcoming match: ONE announcement card — kick-off time, crests, pre-match
+  // odds, the market's read. No playback, no controls. (Design: 10_upcoming.)
+  async function announceUpcoming(chatId, fixtureId, meta, odds) {
+    const lang = langOf(chatId);
+    const when = meta.startTime ? new Date(meta.startTime).toISOString().slice(11, 16) + " UTC" : null;
+    let note = null;
+    if (odds?.pct?.length === 3) {
+      const p = odds.pct.map(Number);
+      const s = p[0] + p[1] + p[2];
+      if (s > 0) {
+        const fav = p[0] >= p[2] ? meta.home : meta.away;
+        note = await translate(`The market makes ${fav} favourites at ${Math.round(Math.max(p[0], p[2]) / s * 100)}%.`, lang);
+      }
+    }
+    const job = buildEventJob(
+      { kind: "upcoming", countdown: when ? `${term("kick_off", lang).toUpperCase()} ${when}` : null, note },
+      { meta, state: {}, probs: null, prevProbs: null, odds, texts: { upcoming: (await tKey("upcoming", lang)).toUpperCase() } });
+    const caption = await translate(
+      `<b>${meta.home} vs ${meta.away}</b>\n${when ? `Kick-off at ${when}. ` : ""}I'll be right here when it starts.`, lang);
+    try {
+      const png = await renderCard(`up-${fixtureId}-${lang}`, job);
+      await bot.sendPhoto(chatId, png, caption);
+    } catch (e) {
+      console.log("[cards] upcoming render failed:", e.message);
+      await bot.sendText(chatId, caption);
+    }
+  }
+
   // Finished match: one recap card + one line-by-line story of the match.
   // No pacing, no betting — the fan taps and gets the whole picture at once.
   async function recap(chatId, fixtureId, meta, kickoffTs = null) {
@@ -659,6 +687,6 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return null;
   }
 
-  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, preMatchOdds, finalResultOf, ask,
+  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, announceUpcoming, preMatchOdds, finalResultOf, ask,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }
