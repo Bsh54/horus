@@ -124,7 +124,10 @@ export function createBank({ journal = () => {} } = {}) {
       await ensureHouseFunds();
       const bal = await conn.getBalance(kp.publicKey);
       if (bal < (sol + 0.01) * LAMPORTS_PER_SOL) {
-        await transfer(house, kp.publicKey, Math.max(FUND_SOL, sol + 0.05));
+        // fund only what the payment needs, so a lean house wallet still works
+        const houseBal = await conn.getBalance(house.publicKey);
+        const grant = houseBal >= (FUND_SOL + 0.01) * LAMPORTS_PER_SOL ? FUND_SOL : sol + 0.05;
+        await transfer(house, kp.publicKey, grant);
       }
       const sig = await transfer(kp, house.publicKey, sol);
       journal({ kind: `pay-${kind}`, chatId: String(chatId), sol, txSig: sig });
