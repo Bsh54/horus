@@ -32,7 +32,9 @@ export function createBot({ onCommand }) {
   }
 
   async function sendText(chatId, text, extra = {}) {
-    return call("sendMessage", { chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
+    // last line of defence: no computed placeholder ever reaches a fan
+    const clean = String(text).replace(/\bNaN\b|\bundefined\b|\bnull\b/g, "—");
+    return call("sendMessage", { chat_id: chatId, text: clean, parse_mode: "HTML", disable_web_page_preview: true, ...extra });
   }
 
   async function sendVoice(chatId, oggPath, caption) {

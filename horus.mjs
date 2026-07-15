@@ -1,8 +1,8 @@
 // HORUS — the eye on every match.
-// Pundit engine: turns live feed events into fan-facing commentary with market
-// context (win probabilities, odds moves), speaks through TTS voice notes,
-// answers questions through an optional LLM layer, and can replay any archived
-// match of the tournament as if it were live.
+// Pundit engine: turns feed events into fan-facing commentary with market
+// context (win probabilities, odds moves), and broadcasts any archived match
+// of the tournament progressively, as if it were live. Fully deterministic —
+// no external AI service involved.
 import { readFileSync, existsSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
@@ -11,40 +11,11 @@ import { gunzipSync } from "zlib";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA = join(__dirname, "data");
 
-const DEEPSEEK_FILE = join(DATA, "deepseek.json");
-const dsConf = existsSync(DEEPSEEK_FILE) ? JSON.parse(readFileSync(DEEPSEEK_FILE, "utf8")) : {};
-const deepseekKey = dsConf.key || null;
-const deepseekModel = dsConf.model || "deepseek-chat";
-
-const pctS = (p) => (p * 100).toFixed(0) + "%";
+const pctS = (p) => (Number.isFinite(p) ? (p * 100).toFixed(0) + "%" : "—");
 
 export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   // per-fixture last known probabilities to phrase "before -> after"
   const probMem = new Map();
-
-  // ---------------------------------------------------------------------------
-  // LLM layer (optional): colourful phrasing + Q&A. Deterministic templates are
-  // the fallback — the product never depends on the external API.
-  // ---------------------------------------------------------------------------
-  async function llm(system, user, maxTokens = 220) {
-    if (!deepseekKey) return null;
-    try {
-      const r = await fetch("https://api.deepseek.com/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${deepseekKey}` },
-        body: JSON.stringify({
-          model: deepseekModel, max_tokens: maxTokens, temperature: 0.7,
-          thinking: { type: "disabled" }, // plain answers, no reasoning preamble
-          messages: [{ role: "system", content: system }, { role: "user", content: user }],
-        }),
-        signal: AbortSignal.timeout(12000),
-      });
-      const body = await r.json();
-      return body.choices?.[0]?.message?.content?.trim() || null;
-    } catch { return null; }
-  }
-
-  const PUNDIT_PERSONA = "You are HORUS, a sharp, credible football pundit and market analyst. Tone: professional, direct, warm but never gushing — no flattery, no hype, no exclamation spam, at most one emoji. 1-3 concise sentences. You know betting markets inside out: probabilities come from real demargined odds. Never invent facts beyond the data given.";
 
   // ---------------------------------------------------------------------------
   // Narration templates (deterministic core)
@@ -184,14 +155,31 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const out = [];
     for (const e of events || []) {
       const team = e.isHome ? meta.home : meta.away;
-      const min = e.minute != null ? `${e.minute}'` : "";
-      const sc = e.score ? `${meta.home} ${e.score[0]}-${e.score[1]} ${meta.away}` : "";
-      if (e.kind === "goal") out.push({ ts: e.ts, big: true, txt: `⚽ <b>GOAL — ${team}.</b> ${sc} (${min})` });
-      else if (e.kind === "red") out.push({ ts: e.ts, big: true, txt: `🟥 <b>Red card — ${team} down to ten.</b> (${min}) ${sc}` });
-      else if (e.kind === "yellow") out.push({ ts: e.ts, txt: `🟨 Yellow card — ${team} (${min})` });
-      else if (e.kind === "phase") out.push({ ts: e.ts, txt: `⏱ <b>${e.text}</b>${sc ? " — " + sc : ""}` });
+      const min = e.minute != null && Number.isFinite(e.minute) ? ` (${e.minute}')` : "";
+      const sc = e.score && e.score[0] != null ? `${meta.home} ${e.score[0]}-${e.score[1]} ${meta.away}` : "";
+      const stats = e.stats
+        ? `\nCorners ${e.stats.corners[0]}-${e.stats.corners[1]} · Yellows ${e.stats.yellow[0]}-${e.stats.yellow[1]}${(e.stats.red[0] || e.stats.red[1]) ? ` · Reds ${e.stats.red[0]}-${e.stats.red[1]}` : ""}`
+        : "";
+      if (e.kind === "goal") out.push({ ts: e.ts, big: true, txt: `⚽ <b>GOAL — ${team}.</b> ${sc}${min}` });
+      else if (e.kind === "red") out.push({ ts: e.ts, big: true, txt: `🟥 <b>Red card — ${team} down to ten.</b>${min} ${sc}` });
+      else if (e.kind === "yellow") out.push({ ts: e.ts, txt: `🟨 Yellow card — ${team}${min}` });
+      else if (e.kind === "corner") out.push({ ts: e.ts, minor: true, txt: `⛳ Corner — ${team}${min}` });
+      else if (e.kind === "phase") out.push({ ts: e.ts, txt: `⏱ <b>${e.text}</b>${sc ? " — " + sc : ""}${stats}` });
     }
     return out;
+  }
+
+  // deterministic closing summary from the match facts
+  function closingSummary(meta, events) {
+    const goals = (events || []).filter((e) => e.kind === "goal");
+    const reds = (events || []).filter((e) => e.kind === "red");
+    const last = goals[goals.length - 1];
+    const final = last && last.score ? `${last.score[0]}-${last.score[1]}` : null;
+    const parts = [`That's full time in ${meta.home} vs ${meta.away}${final ? ` — ${final}` : ""}.`];
+    if (goals.length) parts.push(`${goals.length} goal${goals.length > 1 ? "s" : ""}: ` +
+      goals.map((g) => `${g.isHome ? meta.home : meta.away}${g.minute != null ? ` ${g.minute}'` : ""}`).join(", ") + ".");
+    if (reds.length) parts.push(`${reds.length} red card${reds.length > 1 ? "s" : ""} shaped the game.`);
+    return parts.join(" ");
   }
 
   const reliveRuns = new Map(); // chatId -> abort flag
@@ -200,7 +188,8 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const ticks = loadTicksFor(fixtureId);
     if (!ticks || !ticks.length) { await bot.sendText(chatId, "No coverage available for that match — /matches for the rest."); return; }
     let moments = buildTimeline(ticks, meta);
-    const evMoments = eventMoments(events, meta);
+    let evMoments = eventMoments(events, meta);
+    if (durationSec <= 120) evMoments = evMoments.filter((m) => !m.minor); // quick mode: skip corners
     if (evMoments.length) {
       // real events take the lead: drop market-inferred shocks (they duplicate goals)
       moments = moments.filter((m) => !/💥|📉/.test(m.txt)).concat(evMoments);
@@ -220,20 +209,11 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       prevTs = m.ts;
       await bot.sendText(chatId, m.txt);
     }
-    // closing pundit summary
-    const summary = await llm(PUNDIT_PERSONA, `Give a 2-3 sentence closing analysis of this match:\n${moments.filter((m) => !m.checkpoint).map((m) => m.txt.replace(/<[^>]+>/g, "")).join("\n")}`);
-    await bot.sendText(chatId, (summary ? `🎙 ${summary}` : `🎙 That's full time in ${meta.home} vs ${meta.away}.`) + "\n\nNext match: /matches");
+    // closing summary built strictly from the match facts
+    await bot.sendText(chatId, `🎙 ${closingSummary(meta, events)}\n\nNext match: /matches`);
     reliveRuns.delete(String(chatId));
   }
 
-  // ---------------------------------------------------------------------------
-  // Conversational Q&A
-  // ---------------------------------------------------------------------------
-  async function ask(chatId, question, liveContext) {
-    const answer = await llm(PUNDIT_PERSONA + " Answer the fan's question strictly from this live data:\n" + liveContext, question, 300);
-    await bot.sendText(chatId, answer || "Analysis engine unavailable right now — /live gives you the raw numbers.");
-  }
-
-  return { notifyFollowers, rememberProbs, relive, ask, llm,
+  return { notifyFollowers, rememberProbs, relive,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }

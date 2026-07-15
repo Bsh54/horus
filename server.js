@@ -263,13 +263,16 @@ async function scoreEventsFor(fid) {
         if (d.score[side] === prev.score[side] + 1) evs.push({ ts, kind: "goal", isHome: side === 0, minute, score: [...d.score] });
         if (d.yellow[side] > prev.yellow[side]) evs.push({ ts, kind: "yellow", isHome: side === 0, minute });
         if (d.red[side] > prev.red[side]) evs.push({ ts, kind: "red", isHome: side === 0, minute, score: [...d.score] });
+        if (d.corners[side] === prev.corners[side] + 1) evs.push({ ts, kind: "corner", isHome: side === 0, minute });
       }
     }
     if (PHASES[m.StatusId] && !phasesSeen.has(m.StatusId)) {
       phasesSeen.add(m.StatusId);
-      evs.push({ ts, kind: "phase", text: PHASES[m.StatusId], minute, score: [...d.score] });
+      // phase lines carry the running stats picture (corners, cards)
+      evs.push({ ts, kind: "phase", text: PHASES[m.StatusId], minute, score: [...d.score],
+        stats: { corners: [...d.corners], yellow: [...d.yellow], red: [...d.red] } });
     }
-    prev = { score: d.score, yellow: d.yellow, red: d.red };
+    prev = { score: d.score, yellow: d.yellow, red: d.red, corners: d.corners };
   }
   return evs;
 }
@@ -335,7 +338,7 @@ async function botCommand({ chatId, text, from, bot }) {
   switch ((cmd || "").toLowerCase()) {
     case "/start":
       await bot.sendText(chatId,
-        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, pick your pace, and follow it with my commentary.\n\n<b>Main commands</b>\n⚽ /matches — pick a match to watch\n💬 /ask — ask me about any match\n\n<b>More</b>\n📊 /live — current picture\n⏹ /stopreplay — leave the match\n/unfollow — mute all alerts`);
+        `𓂀 <b>Hi ${name}, I'm HORUS.</b>\n\nI broadcast World Cup matches right here in Telegram — the match, and what the betting market makes of it. Pick a match, pick your pace, and follow it with my commentary.\n\n<b>Main commands</b>\n⚽ /matches — pick a match to watch\n📊 /live — current picture\n\n<b>More</b>\n⏹ /stopreplay — leave the match\n/unfollow — mute all alerts`);
       break;
     case "/matches": {
       const rows = listMatches();
@@ -366,14 +369,6 @@ async function botCommand({ chatId, text, from, bot }) {
       const shown = (active.length ? active : ids).slice(0, 5);
       if (!shown.length) { await bot.sendText(chatId, "You're not following anything yet. /matches to pick one."); break; }
       for (const id of shown) await bot.sendText(chatId, liveContextFor(Number(id)));
-      break;
-    }
-    case "/ask": {
-      if (!arg) { await bot.sendText(chatId, "Ask me something, e.g. /ask who is winning? or /ask what does the market think of England?"); break; }
-      const subs = bot.subs.get(String(chatId));
-      const ids = subs ? (subs.follows[0] === "all" ? (live ? live.allFixtureIds() : []) : subs.follows) : (live ? live.allFixtureIds() : []);
-      const ctx = ids.slice(0, 6).map((id) => liveContextFor(Number(id))).join("\n---\n");
-      await horus.ask(chatId, arg, ctx || "no live data right now");
       break;
     }
     case "/relive":
@@ -407,11 +402,7 @@ async function botCommand({ chatId, text, from, bot }) {
         break;
       }
       if (text.startsWith("/")) await bot.sendText(chatId, "Unknown command — /start shows what I can do.");
-      else { // free text = conversation
-        const ids = live ? live.allFixtureIds() : [];
-        const ctx = ids.slice(0, 6).map((id) => liveContextFor(Number(id))).join("\n---\n");
-        await horus.ask(chatId, text, ctx || "no live data right now");
-      }
+      else await bot.sendText(chatId, "Pick a match to watch with /matches, or /live for the current picture.");
   }
 }
 
