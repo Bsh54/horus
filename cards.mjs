@@ -48,6 +48,16 @@ const TEAM_ISO = {
   serbia: "rs", slovenia: "si", slovakia: "sk", romania: "ro", hungary: "hu",
   czechia: "cz", "czech republic": "cz", albania: "al", georgia: "ge",
 };
+// Player portraits: pre-fetched Wikimedia images (prefetch-players.mjs) in
+// data/players/. No live scraping — a missing photo falls back to initials.
+const PLAYERS = join(__dirname, "data", "players");
+const slug = (name) => String(name).toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+export function playerPhoto(name) {
+  if (!name) return null;
+  const f = join(PLAYERS, `${slug(name)}.png`);
+  return existsSync(f) ? f : null;
+}
+
 const logoMiss = new Set();
 async function teamLogo(name) {
   if (!name) return null;

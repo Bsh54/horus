@@ -9,7 +9,7 @@ import { fileURLToPath } from "url";
 import { gunzipSync } from "zlib";
 import { translate, t as tKey } from "./i18n.mjs";
 import { langOf, isPremium } from "./users.mjs";
-import { renderCard, buildEventJob } from "./cards.mjs";
+import { renderCard, buildEventJob, playerPhoto } from "./cards.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA = join(__dirname, "data");
@@ -92,6 +92,26 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     dispatchCards(fixtureId, ev, d).catch((e) => console.log("[cards]", e.message));
   }
 
+  // Demo enrichment: TxLINE streams are team-level, but for replayed matches
+  // the play-by-play archive names the scorer — find the play matching the
+  // new score and pull the player (name + pre-fetched Wikimedia portrait).
+  function playerFromPbp(fixtureId, kind, score) {
+    try {
+      const pbp = loadPbp(fixtureId);
+      if (!pbp?.plays) return null;
+      let name = null;
+      if (kind === "goal" && score) {
+        const play = pbp.plays.find((p) => p.goal && p.text?.includes(` ${score[0]},`) && p.text?.includes(` ${score[1]}.`));
+        name = play?.text?.match(/\d\.\s+([\p{Lu}][\p{L}'.-]+(?: [\p{Lu}][\p{L}'.-]+){0,3}) \(/u)?.[1] || null;
+      } else if (kind === "red") {
+        const play = pbp.plays.findLast((p) => /Red Card/i.test(p.type || ""));
+        name = play?.text?.match(/^([\p{Lu}][\p{L}'.-]+(?: [\p{Lu}][\p{L}'.-]+){0,3}) \(/u)?.[1] || null;
+      }
+      if (!name) return null;
+      return { name, photo: playerPhoto(name), halo: kind === "goal", desat: kind === "red" ? 0.4 : 0 };
+    } catch { return null; }
+  }
+
   // Map feed events onto card kinds; render once per (event × language) and
   // fan the PNG out to premium followers (Telegram file_id reuse in bot).
   const CARD_KIND = { goal: "goal", red: "red", steam: "market" };
@@ -103,6 +123,10 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const premium = bot.followersOf(fixtureId).filter((f) => isPremium(f.chatId));
     if (!premium.length) return;
     const st = getState(fixtureId) || {};
+    if (!ev.player && (kind === "goal" || kind === "red")) {
+      const p = playerFromPbp(fixtureId, kind, st.score);
+      if (p) ev = { ...ev, player: p };
+    }
     const ctx = {
       meta: d.meta, state: st,
       probs: getProbs(fixtureId), prevProbs: probMem.get(fixtureId), odds: null,
