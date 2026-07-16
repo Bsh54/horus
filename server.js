@@ -452,9 +452,7 @@ async function runSession(bot, chatId, fid, speed = 5) {
     { reply_markup: sessionControls(speed) });
   // the fan's match starts at 0-0, minute 0 — like every match should
   const st = blankMatchState();
-  const fouls = horus.foulMoments(Number(fid)); // pbp decoration, pre-sampled
-  let nextFoul = 0;
-  let probs = null, prevProbs = null, prevTs = null;
+  let probs = null, prevProbs = null, odds = null, prevTs = null;
   for (let i = tl.cursor; i < tl.msgs.length; i++) {
     const { ts, stream, msg } = tl.msgs[i];
     if (prevTs != null) {
@@ -464,9 +462,14 @@ async function runSession(bot, chatId, fid, speed = 5) {
     prevTs = ts;
     if (sess.stop) return;
     if (stream === "odds") {
-      if (msg.SuperOddsType === "1X2_PARTICIPANT_RESULT" && !msg.MarketPeriod && Array.isArray(msg.Pct) && msg.Pct.length === 3) {
-        const p = msg.Pct.map(Number), s = p[0] + p[1] + p[2];
-        if (s > 0) { prevProbs = probs; probs = { home: p[0] / s, draw: p[1] / s, away: p[2] / s }; }
+      // the fan's market state: full-time 1X2, price AND demargined percents,
+      // exactly as TxLINE streams them tick by tick
+      if (msg.SuperOddsType === "1X2_PARTICIPANT_RESULT" && !msg.MarketPeriod && Array.isArray(msg.Prices) && msg.Prices.length === 3) {
+        odds = { home: +(msg.Prices[0] / 1000).toFixed(2), draw: +(msg.Prices[1] / 1000).toFixed(2), away: +(msg.Prices[2] / 1000).toFixed(2) };
+        if (Array.isArray(msg.Pct) && msg.Pct.length === 3) {
+          const p = msg.Pct.map(Number), s = p[0] + p[1] + p[2];
+          if (s > 0) { prevProbs = probs; probs = { home: p[0] / s, draw: p[1] / s, away: p[2] / s }; }
+        }
       }
       continue;
     }
@@ -488,14 +491,8 @@ async function runSession(bot, chatId, fid, speed = 5) {
     if (st.corners[0] > prev.corners[0]) evs.push({ kind: "corner", isHome: true });
     if (st.corners[1] > prev.corners[1]) evs.push({ kind: "corner", isHome: false });
     if (st.statusId !== prev.statusId && PHASES[st.statusId]) evs.push({ kind: "period", text: PHASES[st.statusId] });
-    // fouls aren't in the TxLINE stats — decorate from the play-by-play as
-    // the clock passes each selected foul minute
-    while (nextFoul < fouls.length && st.minute != null && st.minute >= fouls[nextFoul].min) {
-      evs.push({ kind: "foul", ...fouls[nextFoul] });
-      nextFoul++;
-    }
     for (const ev of evs) {
-      await horus.personalEvent(chatId, Number(fid), meta, ev, { st, probs, prevProbs }).catch((e) => console.log("[session]", e.message));
+      await horus.personalEvent(chatId, Number(fid), meta, ev, { st, probs, prevProbs, odds }).catch((e) => console.log("[session]", e.message));
       if (sess.stop) return;
     }
     if (isFinalStatus(st.statusId)) break;

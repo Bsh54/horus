@@ -451,7 +451,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     } catch (e) { console.log("[cards] replay render failed:", e.message); return false; }
   }
 
-  // Mini cards (the designed m-series): yellow, corner, foul.
+  // Mini cards (the designed m-series): yellow, corner.
   async function sendMiniCard(chatId, fixtureId, meta, ev, { st, lang, team }) {
     try {
       const texts = {};
@@ -469,13 +469,6 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
         evx.subtitle = await translate(`Corner number ${n} for ${team}.`, lang);
         texts.corner = term("corners", lang).toUpperCase();
         texts.corners = term("corners", lang);
-      } else if (ev.kind === "foul") {
-        evx.kind = "foul";
-        evx.title = ev.player || `${term("fouls", lang)} — ${team}`;
-        evx.subtitle = `${term("fouls", lang)} — ${team}`;
-        texts.foul = term("fouls", lang).toUpperCase();
-        texts.fouls = term("fouls", lang);
-        evx.foulCount = ev.fouls;
       }
       if (evx.title && playerPhoto(evx.title)) evx.player = { name: evx.title, photo: playerPhoto(evx.title) };
       else if (ev.kind === "yellow" && evx.title && !evx.title.includes("—")) evx.player = { name: evx.title, photo: playerPhoto(evx.title) };
@@ -486,36 +479,15 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     } catch (e) { console.log("[cards] mini render failed:", e.message); }
   }
 
-  // Selected fouls of a match for playback decoration: TxLINE carries no foul
-  // stat, so the play-by-play provides them — sampled down to the meaningful
-  // ones (max 6 per match), with running foul counts per side.
-  function foulMoments(fixtureId) {
-    const pbp = loadPbp(fixtureId);
-    if (!pbp?.plays) return [];
-    const meta = getMeta(fixtureId) || { home: "", away: "" };
-    const all = [];
-    const count = [0, 0];
-    for (const p of pbp.plays) {
-      if (p.type !== "Foul" || p.min == null || !/Foul by/.test(p.text || "")) continue;
-      const team = String(p.text).match(/\(([^)]+)\)/)?.[1] || "";
-      const isHome = String(meta.home).toLowerCase().includes(team.toLowerCase().split(" ")[0]);
-      count[isHome ? 0 : 1]++;
-      all.push({ min: p.min, isHome, player: String(p.text).match(/^Foul by ([^(]+?)\s*\(/)?.[1] || null, fouls: [...count] });
-    }
-    if (all.length <= 6) return all;
-    const step = Math.ceil(all.length / 6);
-    return all.filter((_, i) => i % step === 0).slice(0, 6);
-  }
-
   // One event of a PERSONAL playback session: instant text ping, then the
   // visual card — both to a single chat, in the fan's language.
-  async function personalEvent(chatId, fixtureId, meta, ev, { st, probs, prevProbs }) {
+  async function personalEvent(chatId, fixtureId, meta, ev, { st, probs, prevProbs, odds }) {
     const lang = langOf(chatId);
     const score = `${st.score[0]}-${st.score[1]}`;
     const min = st.minute != null ? `${st.minute}'` : "";
     const team = ev.isHome ? meta.home : meta.away;
     // small events: one mini card, no text ping (the designed m-cards)
-    if (ev.kind === "yellow" || ev.kind === "corner" || ev.kind === "foul") {
+    if (ev.kind === "yellow" || ev.kind === "corner") {
       return sendMiniCard(chatId, fixtureId, meta, ev, { st, lang, team });
     }
     let head = "";
@@ -547,7 +519,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     });
     const job = buildEventJob(
       { ...evx, quote: { author: q.author, text: await translate(q.text, lang) } },
-      { meta, state: st, probs, prevProbs, odds: null, texts });
+      { meta, state: st, probs, prevProbs, odds, texts });
     if (!job) return;
     try {
       const png = await renderCard(`ps-${fixtureId}-${kind}-${st.score.join("")}-${st.minute ?? "x"}-${lang}`, job);
@@ -754,6 +726,6 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return null;
   }
 
-  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, announceUpcoming, foulMoments, preMatchOdds, finalResultOf, ask,
+  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, announceUpcoming, preMatchOdds, finalResultOf, ask,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }
