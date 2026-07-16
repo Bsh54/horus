@@ -148,7 +148,7 @@ export function buildEventJob(ev, ctx) {
       title: ev.title || (texts.yellow_card || "Yellow card"),
       subtitle: ev.subtitle || "",
       statLabel: texts.cards || "Cards",
-      statVal: `${(state?.yellow || [0, 0])[0]} - ${(state?.yellow || [0, 0])[1]}`,
+      statVal: `${(state?.yellow || [0, 0])[0]}Y - ${(state?.yellow || [0, 0])[1]}Y`,
       statColor: "yellow",
     };
     case "corner": return {

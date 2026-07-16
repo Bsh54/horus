@@ -503,6 +503,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       || String(t).match(/by ([\p{Lu}][\p{L}'’.-]+(?: [\p{Lu}][\p{L}'’.-]+){0,3}),/u)?.[1] || null;
     const booked = (t) => String(t).match(/^([\p{Lu}][\p{L}'’.-]+(?: [\p{Lu}][\p{L}'’.-]+){0,3}) \(/u)?.[1] || null;
     const GOALS = new Set(["Goal", "Goal - Header", "Penalty - Scored", "Own Goal"]);
+    const hasET = pbp.plays.some((p) => p.type === "Start Extra Time");
     const evs = [];
     let score = [0, 0], yellow = [0, 0], red = [0, 0], corners = [0, 0];
     for (const p of pbp.plays) {
@@ -526,8 +527,14 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       } else if (ty === "Halftime") evs.push({ min, kind: "period", text: "Halftime" });
       else if (ty === "Start 2nd Half") evs.push({ min, kind: "period", text: "2nd half" });
       else if (ty === "Start Extra Time") evs.push({ min, kind: "period", text: "Extra time" });
-      else if (ty === "End Regular Time" || ty === "End Extra Time") evs.push({ min, kind: "period", text: "Full time" });
+      // regular time ends the match only when there's no extra time; extra time
+      // (when present) ends it. The final whistle is tagged so it sorts LAST.
+      else if (ty === "End Regular Time" && !hasET) evs.push({ min, kind: "period", text: "Full time", ft: true });
+      else if (ty === "End Extra Time") evs.push({ min, kind: "period", text: "Full time", ft: true });
     }
+    // stable sort by minute; within a minute the final whistle comes last so a
+    // late booking never appears after "Full time"
+    evs.sort((a, b) => (a.min - b.min) || ((a.ft ? 1 : 0) - (b.ft ? 1 : 0)));
     return evs;
   }
 

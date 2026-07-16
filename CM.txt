@@ -1,0 +1,20 @@
+Live coherence: full-time always last, no phantom bet win, per-match audit
+
+Fixes from testing each live match's actual rendered transcript:
+
+- ORDERING: a late booking at 90' appeared AFTER "Full time". Events are
+  now stable-sorted by minute with the final whistle tagged to sort last;
+  extra-time matches correctly treat End Regular Time as a period marker
+  and End Extra Time as the whistle.
+- PHANTOM WIN: stale bets in bets.json settled at the end of a session
+  even though the fan never bet (and the bet button was hidden because an
+  old bet existed). bets.json is reset with the user wipe; it must be an
+  array, not an object.
+- Yellow card stat now reads "0Y - 2Y" per the m7 preview design.
+
+New general-rule audit (test-live-audit.mjs) — must hold for real live
+too — passes on all 8 matches: opens with one kick-off card, ends with
+the full-time card and nothing after, final score equals the real
+result, goals never go backwards, no duplicate consecutive cards.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
