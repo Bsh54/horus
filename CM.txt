@@ -1,0 +1,19 @@
+Yellow card as a full card; private chat = ask HORUS anything
+
+- Yellow card is now a big card like the red: the booked player's face
+  with a yellow card icon drawn beside it, cumulative yellow tally
+  (0Y - 1Y), win probability and a Professor line. render.py draws the
+  brandished icon in red or yellow.
+- personalEvent routes yellow through the full-card path (no text ping,
+  the card speaks); corners stay compact minis.
+- Card cache key includes the cumulative card tally so two bookings at
+  the same minute never collide onto one another's card.
+- Match stat labels on cards use the curated football lexicon, never
+  machine translation.
+- Private chats: any plain message is now auto-answered by HORUS
+  (grounded on live data via DeepSeek); groups still need /ask.
+
+Verified: yellow big card renders with the icon; DM plain question is
+answered with real live scores; live audit still passes on all 8 matches.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

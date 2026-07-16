@@ -144,12 +144,14 @@ export function buildEventJob(ev, ctx) {
       quote: ev.quote,
     };
     case "yellow": return {
-      ...common, kind: "mini", badge: texts.yellow_card || "YELLOW CARD", badgeColor: "yellow",
-      title: ev.title || (texts.yellow_card || "Yellow card"),
-      subtitle: ev.subtitle || "",
-      statLabel: texts.cards || "Cards",
-      statVal: `${(state?.yellow || [0, 0])[0]}Y - ${(state?.yellow || [0, 0])[1]}Y`,
-      statColor: "yellow",
+      ...common, kind: "big", badge: texts.yellow_card || "YELLOW CARD", badgeColor: "yellow", badgeFg: "bg",
+      player: ev.player || { name: ev.isHome ? meta.home : meta.away },
+      yellowCardIcon: true,
+      stats: [
+        [texts.cards || "Yellow cards", `${(state?.yellow || [0, 0])[0]}Y - ${(state?.yellow || [0, 0])[1]}Y`, "yellow"],
+        ...probBox,
+      ],
+      quote: ev.quote,
     };
     case "corner": return {
       ...common, kind: "mini", badge: texts.corner || "CORNER", badgeColor: "gold_deep",

@@ -214,8 +214,10 @@ def photo_block(img, d, job):
     if p.get("name"):
         d.text((LEFT, 92), p["name"].upper()[:26], fill=FG, font=F_PLAYER)
         d.line([(LEFT, 128), (LEFT + 100, 128)], fill=ring, width=3)
-    if job.get("redCardIcon"):
-        card = Image.new("RGBA", (24, 34), COLORS["red"] + (255,))
+    # brandished card icon beside the photo — red or yellow
+    icon_col = COLORS["red"] if job.get("redCardIcon") else (COLORS["yellow"] if job.get("yellowCardIcon") else None)
+    if icon_col:
+        card = Image.new("RGBA", (24, 34), icon_col + (255,))
         card = card.rotate(8, expand=True, resample=Image.BICUBIC)
         img.paste(card, (x - 44, y + 30), card)
 

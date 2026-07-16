@@ -566,25 +566,26 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     const score = `${st.score[0]}-${st.score[1]}`;
     const min = st.minute != null ? `${st.minute}'` : "";
     const team = ev.isHome ? meta.home : meta.away;
-    // small events: one mini card, no text ping (the designed m-cards)
-    if (ev.kind === "yellow" || ev.kind === "corner") {
+    // corner stays a compact mini card; a yellow is a full card with the
+    // booked player's face and a yellow card icon (like the red card)
+    if (ev.kind === "corner") {
       return sendMiniCard(chatId, fixtureId, meta, ev, { st, lang, team, bot: B });
     }
+    // text ping only for the loud moments; yellow speaks through its card
     let head = "";
     if (ev.kind === "goal") head = `⚽ ${term("goal", lang)} — ${team}! ${meta.home} ${score} ${meta.away} (${min})`;
     else if (ev.kind === "red") head = `🟥 ${term("red_card", lang).toUpperCase()} — ${team} (${min}), ${score}`;
     else if (ev.kind === "var") head = `📺 VAR — ${await translate(`${team} goal overturned`, lang)}. ${meta.home} ${score} ${meta.away} (${min})`;
     else if (ev.kind === "period") head = `⏱ ${await translate(ev.text, lang)} — ${meta.home} ${score} ${meta.away}`;
-    if (!head) return;
-    await B.sendText(chatId, head);
-    let kind = ev.kind === "goal" ? "goal" : ev.kind === "red" ? "red" : ev.kind === "var" ? "var" : null;
+    if (head) await B.sendText(chatId, head);
+    let kind = ev.kind === "goal" ? "goal" : ev.kind === "red" ? "red" : ev.kind === "yellow" ? "yellow" : ev.kind === "var" ? "var" : null;
     if (ev.kind === "period" && /full time|finished/i.test(ev.text || "")) kind = "fulltime";
     else if (ev.kind === "period" && /1st half/i.test(ev.text || "")) kind = "kickoff";
     else if (ev.kind === "period") kind = "phase";
     if (!kind) return;
     const evx = { ...ev, kind };
-    if (kind === "goal" || kind === "red") {
-      // exact scorer/sent-off name from the event, else resolve from pbp
+    if (kind === "goal" || kind === "red" || kind === "yellow") {
+      // exact scorer/booked name from the event, else resolve from pbp
       const name = typeof ev.player === "string" ? ev.player : null;
       const p = name
         ? { name, photo: playerPhoto(name), halo: kind === "goal", desat: kind === "red" ? 0.4 : 0 }
@@ -594,8 +595,14 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     if (kind === "phase") evx.text = await translate(ev.text, lang);
     if (kind === "var") { evx.title = await translate("DECISION OVERTURNED", lang); evx.ruling = "NO GOAL"; }
     const texts = {};
-    for (const k of ["goal", "red_card", "corner", "win_probability", "fulltime", "kickoff", "corners", "cards"])
+    for (const k of ["goal", "win_probability", "fulltime", "kickoff"])
       texts[k] = (await tKey(k, lang)).toUpperCase();
+    // football terms from the curated lexicon, never machine-translated
+    texts.yellow_card = term("yellow_card", lang).toUpperCase();
+    texts.red_card = term("red_card", lang).toUpperCase();
+    texts.cards = term("yellow_cards", lang);
+    texts.corner = term("corners", lang).toUpperCase();
+    texts.corners = term("corners", lang);
     const q = quoteFor(kind, {
       fixtureId, team: ev.isHome ? meta.home : meta.away, player: evx.player?.name,
       minute: st.minute, score,
@@ -608,7 +615,10 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       { meta, state: st, probs, prevProbs, odds, texts });
     if (!job) return;
     try {
-      const png = await renderCard(`ps-${fixtureId}-${kind}-${st.score.join("")}-${st.minute ?? "x"}-${lang}`, job);
+      // discriminator so two bookings at the same minute don't collide (and
+      // reuse the wrong player's card): include the cumulative card tally
+      const disc = kind === "yellow" ? (st.yellow || []).join("") : kind === "red" ? (st.red || []).join("") : "";
+      const png = await renderCard(`ps-${fixtureId}-${kind}-${st.score.join("")}-${st.minute ?? "x"}-${disc}-${lang}`, job);
       await B.sendPhoto(chatId, png);
     } catch (e) { console.log("[cards] personal render failed:", e.message); }
   }

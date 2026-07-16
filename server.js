@@ -799,8 +799,14 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
         }
         break;
       }
-      if (text.startsWith("/")) await sendT(bot, chatId, "Unknown command — /start shows what I can do.");
-      else await sendT(bot, chatId, "Pick a match to watch with /matches, or /live for the current picture.");
+      if (text.startsWith("/")) { await sendT(bot, chatId, "Unknown command — /start shows what I can do."); break; }
+      // In a private chat, any plain message is a question to HORUS (grounded
+      // on live data via DeepSeek). Groups still require the explicit /ask.
+      if (String(chatId) === String(from?.id) && text.trim().length > 2) {
+        await botCommand({ chatId, text: `/ask ${text.trim()}`, from, bot, msgId, isCallback });
+      } else {
+        await sendT(bot, chatId, "Ask me anything about a live match, or /matches to watch one.");
+      }
   }
 }
 
