@@ -383,14 +383,6 @@ async function sendMatchesPage(bot, chatId, phase, page = 0, editMsgId = null) {
   nav.push({ text: `${page + 1}/${pages}`, callback_data: "noop" });
   if (page < pages - 1) nav.push({ text: "➡️", callback_data: `pg:${phase}:${page + 1}` });
   kb.push(nav);
-  // demo clock: the whole championship can be fast-forwarded (shared world)
-  if (phase === "live" && sim) {
-    kb.push([
-      { text: sim.speed === 1 ? "· x1 ·" : "x1", callback_data: "clock:1" },
-      { text: sim.speed === 5 ? "· x5 ·" : "x5", callback_data: "clock:5" },
-      { text: sim.speed === 10 ? "· x10 ·" : "x10", callback_data: "clock:10" },
-    ]);
-  }
   const ui = PHASE_UI[phase];
   const text = `${ui.icon ? ui.icon + " " : ""}<b>${ui.title}</b> · ${ids.length}`;
   const extra = { reply_markup: { inline_keyboard: kb } };
