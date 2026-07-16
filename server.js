@@ -1,4 +1,4 @@
-// ProofDesk — Verifiable sports trading terminal & agent
+// HORUS — the eye on every match (server: event pipeline, bot, cards, bank, proofs)
 // Backend: match replay engine + rule-based agent + hash-chained proof journal.
 // TxLINE live connector plugs in via env (TXLINE_API_BASE / TXLINE_JWT / TXLINE_API_TOKEN).
 
@@ -1385,7 +1385,7 @@ app.get("/api/agent/calibration", (_req, res) => {
 });
 app.get("/api/journal", (_req, res) => res.json(journalRead()));
 app.get("/api/journal/verify", (_req, res) => res.json(journalVerify()));
-app.get("/api/health", (_req, res) => res.json({ ok: true, service: "proofdesk", uptime: process.uptime() }));
+app.get("/api/health", (_req, res) => res.json({ ok: true, service: "horus", uptime: process.uptime() }));
 
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: "/ws" });
@@ -1398,7 +1398,7 @@ wss.on("connection", (ws) => {
 });
 
 server.listen(PORT, () => {
-  console.log(`ProofDesk listening on :${PORT}`);
+  console.log(`HORUS listening on :${PORT}`);
   // Both worlds boot together: real TxLINE feed + the demo championship.
   ensureLive().start().then(() => console.log("TxLINE live feed: connected at boot"))
     .catch((e) => console.log("TxLINE live feed unavailable at boot:", e.message));

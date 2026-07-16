@@ -1,5 +1,5 @@
 // TxLINE live connector — streams real odds/scores from the TxLINE API (SSE),
-// normalises messages for the ProofDesk agent, and records raw data for replay.
+// normalises messages for the HORUS agent, and records raw data for replay.
 import { readFileSync, existsSync, appendFileSync, mkdirSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";

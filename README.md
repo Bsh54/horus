@@ -8,35 +8,35 @@ betting market's read on every moment — in **your language**, and verifiable o
 Built for the TxODDS World Cup Hackathon (Consumer & Fan Experiences track),
 powered end-to-end by the **TxLINE** real-time data layer.
 
-**Try it → [@hoorusbot](https://t.me/hoorusbot)** · Landing & dashboard: https://proofdesk.shadrakbessanh.me
+**Try it → [@hoorusbot](https://t.me/hoorusbot)** · Landing page: https://horus.shadrakbessanh.me
 
 ---
 
 ## What HORUS does
 
-- **🌍 130+ languages.** Pick your language at first contact (Fon, Yorùbá,
+- **130+ languages.** Pick your language at first contact (Fon, Yorùbá,
   Swahili and more); every card, ping and AI answer arrives in it. `/language`
   to switch. Football terms use a curated lexicon, never raw machine translation.
-- **⚽ Live visual cards.** Every goal, red card, yellow card, VAR call,
+- **Live visual cards.** Every goal, red card, yellow card, VAR call,
   kick-off and full-time is a designed card carrying the **real TxLINE
   demargined win probability and 1X2 odds at that exact minute** — plus the
   scorer / booked player's portrait.
-- **🎬 Live a match from the 0th minute.** Open a live match, take a position,
+- **Live a match from the 0th minute.** Open a live match, take a position,
   choose your pace (x2 / x5 / Normal), and watch the whole game unfold as
   personal, private playback — driven by the complete match feed.
-- **🗣 Three pundit voices.** El Fuego, The Professor and OptaBrain narrate the
+- **Three pundit voices.** El Fuego, The Professor and OptaBrain narrate the
   moments — alive, never generic, and fact-locked (numbers, names and scores
   are never altered by the LLM).
-- **💬 Ask anything.** In a private chat, just talk — HORUS answers only from
+- **Ask anything.** In a private chat, just talk — HORUS answers only from
   the live feed and can't invent a score. Groups use `/ask`.
-- **◎ On-chain, real SOL.** Take a position on a live/upcoming match; it settles
+- **On-chain, real SOL.** Take a position on a live/upcoming match; it settles
   automatically at the final whistle. Premium (0.1 SOL) is paid on-chain too.
   Every transfer is a real Solana **devnet** transaction — the TxL token is
   **never** used for wagering.
-- **🔏 Verifiable.** `/verify` proves a match score against the TxLINE Merkle
+- **Verifiable.** `/verify` proves a match score against the TxLINE Merkle
   root anchored on Solana (statToProve / eventStatRoot / statProof). HORUS
   literally cannot fabricate a result. A hash-chained journal seals every alert.
-- **🏁 Recaps.** Tap any finished match for one recap card + the full
+- **Recaps.** Tap any finished match for one recap card + the full
   line-by-line story and complete stats.
 
 ## Bot commands
@@ -107,7 +107,7 @@ echo '{ "token": "<telegram bot token>" }' > data/telegram.json
 
 node simulator.mjs fetch                # one-time: cache authentic TxLINE match data
 node prefetch-players.mjs               # one-time: cache player portraits
-node server.js                          # feed + bot + landing/dashboard on :80
+node server.js                          # feed + bot + landing page on :80
 ```
 
 Optional: `data/deepseek.json` (`{ "key": "...", "model": "..." }`) enables the

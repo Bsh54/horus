@@ -7,6 +7,9 @@ import { TOKEN_2022_PROGRAM_ID, ASSOCIATED_TOKEN_PROGRAM_ID, getAssociatedTokenA
 import { Transaction, sendAndConfirmTransaction } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { readFileSync, writeFileSync, existsSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+const DATA = join(dirname(fileURLToPath(import.meta.url)), "data");
 
 const NET = process.env.NET || "devnet";
 const CFG = {
@@ -26,8 +29,8 @@ const CFG = {
 
 const SERVICE_LEVEL_ID = Number(process.env.SERVICE_LEVEL || 1);
 const DURATION_WEEKS = 4;
-const KEYFILE = "/opt/proofdesk/data/wallet.json";
-const OUTFILE = "/opt/proofdesk/data/txline-credentials.json";
+const KEYFILE = join(DATA, "wallet.json");
+const OUTFILE = join(DATA, "txline-credentials.json");
 
 const log = (...a) => console.log("[onboard]", ...a);
 
@@ -66,7 +69,7 @@ const provider = new AnchorProvider(connection, wallet, { commitment: "confirmed
 log("fetching IDL on-chain…");
 const idl = await Program.fetchIdl(CFG.programId, provider);
 if (!idl) { log("FATAL: IDL not published on-chain. Need IDL from docs."); process.exit(1); }
-writeFileSync("/opt/proofdesk/data/txline-idl.json", JSON.stringify(idl, null, 2));
+writeFileSync(join(DATA, "txline-idl.json"), JSON.stringify(idl, null, 2));
 log("IDL ok:", idl.name || idl.metadata?.name, "— instructions:", idl.instructions.map((i) => i.name).join(", "));
 
 const program = new Program(idl, provider);
