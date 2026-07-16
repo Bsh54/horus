@@ -441,20 +441,29 @@ async function runSession(bot, chatId, fid, speed = 5) {
   playbacks.set(String(chatId), sess);
   const meta = metaOf(fid) || { home: "Home", away: "Away" };
   // the fan's match starts at 0-0 — unless the feed's coverage of this match
-  // only begins mid-game: then we seed that baseline silently and say so
+  // only begins well into the game: then seed that baseline silently
   const st = blankMatchState();
   const firstStats = tl.msgs.slice(tl.cursor).find((x) => x.stream === "scores" && x.msg.Stats && Object.keys(x.msg.Stats).length)?.msg;
-  let intro = `<b>${meta.home} vs ${meta.away} — kick-off.</b>\nYour own match, at your own pace.`;
+  let seeded = false;
   if (firstStats) {
     const d = decodeTxStats(firstStats.Stats);
-    if (d.score[0] + d.score[1] > 0 || (firstStats.Clock?.Seconds ?? 0) > 300) {
+    const joinMin = Math.floor((firstStats.Clock?.Seconds ?? 0) / 60);
+    if (d.score[0] + d.score[1] > 0 || joinMin > 10) {
       Object.assign(st, d);
-      st.minute = Math.floor((firstStats.Clock?.Seconds ?? 0) / 60);
+      st.minute = joinMin;
       st.statusId = firstStats.StatusId ?? st.statusId;
-      intro = `<b>${meta.home} ${st.score[0]}-${st.score[1]} ${meta.away}</b>\nCoverage joins at ${st.minute}'. Your own match, at your own pace.`;
+      seeded = true;
     }
   }
-  await sendT(bot, chatId, intro, { reply_markup: sessionControls(speed) });
+  // one opening card (kick-off duel, or coverage-joins score) carrying a Stop
+  await horus.openingCard(chatId, Number(fid), meta, {
+    minute: st.minute, score: st.score, seeded, odds: sim.oddsFor(Number(fid)), bot,
+    keyboard: { inline_keyboard: [[{ text: "⏹ Stop", callback_data: "spd:stop" }]] },
+  });
+  // corner anti-spam: a card only during a pressure spell (3+ in 10 min),
+  // debounced 8 min per side — never one card per corner
+  const cornerLog = [[], []], lastCornerCard = [-99, -99];
+  let baseline = !seeded; // absorb the first stats snapshot silently (no 0' events)
   let probs = null, prevProbs = null, odds = null, lastOddsTs = null, prevTs = null;
   for (let i = tl.cursor; i < tl.msgs.length; i++) {
     const { ts, stream, msg } = tl.msgs[i];
@@ -492,6 +501,9 @@ async function runSession(bot, chatId, fid, speed = 5) {
     if (msg.Stats) {
       const d = decodeTxStats(msg.Stats);
       st.score = d.score; st.yellow = d.yellow; st.red = d.red; st.corners = d.corners;
+      // absorb the opening snapshots as the starting line until the clock is
+      // actually running — avoids phantom "0'" cards from catch-up messages
+      if (baseline) { if ((st.minute ?? 0) >= 1) baseline = false; else continue; }
     }
     const evs = [];
     if (st.score[0] > prev.score[0]) evs.push({ kind: "goal", isHome: true });
@@ -504,15 +516,25 @@ async function runSession(bot, chatId, fid, speed = 5) {
     if (st.red[1] > prev.red[1]) evs.push({ kind: "red", isHome: false });
     if (st.yellow[0] > prev.yellow[0]) evs.push({ kind: "yellow", isHome: true });
     if (st.yellow[1] > prev.yellow[1]) evs.push({ kind: "yellow", isHome: false });
-    if (st.corners[0] > prev.corners[0]) evs.push({ kind: "corner", isHome: true });
-    if (st.corners[1] > prev.corners[1]) evs.push({ kind: "corner", isHome: false });
-    if (st.statusId !== prev.statusId && PHASES[st.statusId]) evs.push({ kind: "period", text: PHASES[st.statusId] });
+    // corners: gate on pressure spell, not one card per corner
+    for (const side of [0, 1]) {
+      if (st.corners[side] <= prev.corners[side]) continue;
+      cornerLog[side].push(st.minute);
+      const recent = cornerLog[side].filter((m) => st.minute - m <= 10).length;
+      if (recent >= 3 && st.minute - lastCornerCard[side] >= 8) {
+        evs.push({ kind: "corner", isHome: side === 0 });
+        lastCornerCard[side] = st.minute;
+      }
+    }
+    // period markers, minus "1st half" — the opening card already IS kick-off
+    if (st.statusId !== prev.statusId && PHASES[st.statusId] && PHASES[st.statusId] !== "1st half")
+      evs.push({ kind: "period", text: PHASES[st.statusId] });
     // stale-market guard: suspended markets must not decorate events with
     // old numbers — beyond 3 minutes the odds/probabilities are withheld
     const fresh = lastOddsTs != null && ts - lastOddsTs <= 180000;
     for (const ev of evs) {
       await horus.personalEvent(chatId, Number(fid), meta, ev, {
-        st, probs: fresh ? probs : null, prevProbs: fresh ? prevProbs : null, odds: fresh ? odds : null,
+        st, probs: fresh ? probs : null, prevProbs: fresh ? prevProbs : null, odds: fresh ? odds : null, bot,
       }).catch((e) => console.log("[session]", e.message));
       if (sess.stop) return;
     }
@@ -1439,6 +1461,23 @@ app.post("/api/debug/cmd", async (req, res) => {
   } catch (e) {
     res.json({ ok: false, error: e.message, stack: (e.stack || "").split("\n").slice(0, 6) });
   }
+});
+
+// Dry-run a whole personal session through the REAL runSession (speed huge =
+// no waits) with a recording bot, returning the exact transcript a viewer
+// gets. Lets us judge live-match quality without watching in real time.
+app.post("/api/debug/watch", async (req, res) => {
+  if ((req.body || {}).token !== "horus-selftest") return res.status(403).json({ ok: false });
+  const sent = [];
+  const rec = {
+    sendText: async (cid, text, extra) => { sent.push({ t: "text", text, kb: !!extra?.reply_markup }); return { ok: true, result: { message_id: 1 } }; },
+    sendPhoto: async (cid, png, cap) => { sent.push({ t: "card", card: String(png).split(/[/\\]/).pop(), cap }); return { ok: true, result: { message_id: 1 } }; },
+    call: async () => ({ ok: true }),
+  };
+  try {
+    await runSession(rec, `dbg-${Date.now()}`, Number(req.body.fid), 1e9);
+    res.json({ ok: true, sent });
+  } catch (e) { res.json({ ok: false, error: e.message, stack: (e.stack || "").split("\n").slice(0, 6), sent }); }
 });
 
 server.listen(PORT, () => {

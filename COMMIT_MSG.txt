@@ -1,0 +1,25 @@
+Live quality pass: anti-spam corners, opening card, single speed field
+
+Reviewed a full live match transcript through the real runSession (new
+/api/debug/watch dry-run + test-watch-transcript.mjs) and fixed what it
+exposed:
+
+- CORNER SPAM: was one card per corner (14 in a wild match). Now a card
+  only during a pressure spell (3+ corners in 10 min, debounced 8 min
+  per side), per the CARTES_SPEC anti-spam rule. Full match went from
+  44 messages to ~20-30.
+- DOUBLE KICK-OFF: the "1st half" period card duplicated the opening
+  card. Every session now opens with exactly one card: a KICK-OFF duel
+  from the whistle, or a "coverage joins at N'" score card mid-game.
+- PHANTOM 0' CARDS: opening feed snapshots are absorbed as the starting
+  line until the clock actually runs, so no yellow/corner shows at 0'.
+- TWO SPEED FIELDS: the pace chooser (x2/x5/Normal) is now the single
+  speed step; the opening card carries only a Stop button, no duplicate
+  speed keyboard.
+- personalEvent/openingCard take the caller's bot so the dry-run harness
+  captures the exact transcript a viewer receives.
+
+Verified: goal/red/yellow/corner/kickoff cards all match the local
+design; every event traces to real TxLINE stats.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>

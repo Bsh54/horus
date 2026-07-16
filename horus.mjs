@@ -452,7 +452,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
   }
 
   // Mini cards (the designed m-series): yellow, corner.
-  async function sendMiniCard(chatId, fixtureId, meta, ev, { st, lang, team }) {
+  async function sendMiniCard(chatId, fixtureId, meta, ev, { st, lang, team, bot: B = bot }) {
     try {
       const texts = {};
       for (const k of ["yellow_card", "corner", "cards", "corners"]) texts[k] = (await tKey(k, lang)).toUpperCase();
@@ -475,20 +475,41 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       const job = buildEventJob(evx, { meta, state: st, probs: null, prevProbs: null, odds: null, texts });
       if (!job) return;
       const png = await renderCard(`m-${fixtureId}-${ev.kind}-${st.minute ?? "x"}-${(st.corners || []).join("")}-${(st.yellow || []).join("")}-${lang}`, job);
-      await bot.sendPhoto(chatId, png);
+      await B.sendPhoto(chatId, png);
     } catch (e) { console.log("[cards] mini render failed:", e.message); }
+  }
+
+  // The opening card of a personal session: a KICK-OFF duel when the fan
+  // starts from the whistle, or a "coverage joins" score card mid-game.
+  async function openingCard(chatId, fixtureId, meta, { minute = 0, score = [0, 0], seeded = false, odds = null, keyboard = null, bot: B = bot }) {
+    const lang = langOf(chatId);
+    try {
+      let job;
+      if (seeded) {
+        const texts = { fulltime: term("kick_off", lang).toUpperCase() };
+        job = buildEventJob({ kind: "fulltime", badge: `${term("kick_off", lang).toUpperCase()} · ${minute}'`, live: true },
+          { meta, state: { score, minute }, probs: null, prevProbs: null, odds: null, texts });
+      } else {
+        job = buildEventJob({ kind: "kickoff" },
+          { meta, state: { score: [0, 0], minute: 0 }, probs: null, prevProbs: null, odds,
+            texts: { kickoff: term("kick_off", lang).toUpperCase() } });
+      }
+      if (!job) return;
+      const png = await renderCard(`open-${fixtureId}-${seeded ? minute : "k"}-${lang}`, job);
+      await B.sendPhoto(chatId, png, "", keyboard ? { reply_markup: keyboard } : {});
+    } catch (e) { console.log("[cards] opening render failed:", e.message); }
   }
 
   // One event of a PERSONAL playback session: instant text ping, then the
   // visual card — both to a single chat, in the fan's language.
-  async function personalEvent(chatId, fixtureId, meta, ev, { st, probs, prevProbs, odds }) {
+  async function personalEvent(chatId, fixtureId, meta, ev, { st, probs, prevProbs, odds, bot: B = bot }) {
     const lang = langOf(chatId);
     const score = `${st.score[0]}-${st.score[1]}`;
     const min = st.minute != null ? `${st.minute}'` : "";
     const team = ev.isHome ? meta.home : meta.away;
     // small events: one mini card, no text ping (the designed m-cards)
     if (ev.kind === "yellow" || ev.kind === "corner") {
-      return sendMiniCard(chatId, fixtureId, meta, ev, { st, lang, team });
+      return sendMiniCard(chatId, fixtureId, meta, ev, { st, lang, team, bot: B });
     }
     let head = "";
     if (ev.kind === "goal") head = `⚽ ${term("goal", lang)} — ${team}! ${meta.home} ${score} ${meta.away} (${min})`;
@@ -496,7 +517,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     else if (ev.kind === "var") head = `📺 VAR — ${await translate(`${team} goal overturned`, lang)}. ${meta.home} ${score} ${meta.away} (${min})`;
     else if (ev.kind === "period") head = `⏱ ${await translate(ev.text, lang)} — ${meta.home} ${score} ${meta.away}`;
     if (!head) return;
-    await bot.sendText(chatId, head);
+    await B.sendText(chatId, head);
     let kind = ev.kind === "goal" ? "goal" : ev.kind === "red" ? "red" : ev.kind === "var" ? "var" : null;
     if (ev.kind === "period" && /full time|finished/i.test(ev.text || "")) kind = "fulltime";
     else if (ev.kind === "period" && /1st half/i.test(ev.text || "")) kind = "kickoff";
@@ -525,7 +546,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     if (!job) return;
     try {
       const png = await renderCard(`ps-${fixtureId}-${kind}-${st.score.join("")}-${st.minute ?? "x"}-${lang}`, job);
-      await bot.sendPhoto(chatId, png);
+      await B.sendPhoto(chatId, png);
     } catch (e) { console.log("[cards] personal render failed:", e.message); }
   }
 
@@ -728,6 +749,6 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return null;
   }
 
-  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, announceUpcoming, preMatchOdds, finalResultOf, ask,
+  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, openingCard, announceUpcoming, preMatchOdds, finalResultOf, ask,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }
