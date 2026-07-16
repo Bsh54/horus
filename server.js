@@ -1397,49 +1397,6 @@ wss.on("connection", (ws) => {
   ws.send(JSON.stringify({ kind: "hello", journal: journalRead(50) }));
 });
 
-// Debug driver: run the REAL botCommand with a recording bot, no Telegram.
-// POST { chatId, text, isCallback } — returns everything the bot would send
-// or the uncaught error + stack. Used by test-live-flow.mjs to reproduce
-// the live journey end to end. Harmless: it only records.
-app.post("/api/debug/cmd", async (req, res) => {
-  if ((req.body || {}).token !== "horus-selftest") return res.status(403).json({ ok: false });
-  const sent = [];
-  const rec = {
-    subs: new Map(),
-    sendText: async (cid, text, extra) => { sent.push({ t: "text", text, kb: extra?.reply_markup?.inline_keyboard }); return { ok: true, result: { message_id: Date.now() } }; },
-    sendPhoto: async (cid, png, cap) => { sent.push({ t: "photo", png: String(png).split(/[/\\]/).pop(), cap }); return { ok: true, result: { message_id: Date.now() } }; },
-    editText: async (cid, mid, text, extra) => { sent.push({ t: "edit", text, kb: extra?.reply_markup?.inline_keyboard }); return { ok: true }; },
-    call: async () => ({ ok: true }),
-    subscribe: (cid, target, name) => { const s = rec.subs.get(String(cid)) || { follows: [], name }; if (target === "all") s.follows = ["all"]; else if (!s.follows.includes(target)) s.follows.push(target); rec.subs.set(String(cid), s); },
-    unsubscribe: (cid) => rec.subs.delete(String(cid)),
-    followersOf: () => [],
-  };
-  const { chatId = "debug", text, isCallback = false } = req.body || {};
-  try {
-    await botCommand({ chatId: String(chatId), text, from: { first_name: "Debug", id: chatId }, bot: rec, msgId: 1, isCallback });
-    res.json({ ok: true, sent });
-  } catch (e) {
-    res.json({ ok: false, error: e.message, stack: (e.stack || "").split("\n").slice(0, 6) });
-  }
-});
-
-// Dry-run a whole personal session through the REAL runSession (speed huge =
-// no waits) with a recording bot, returning the exact transcript a viewer
-// gets. Lets us judge live-match quality without watching in real time.
-app.post("/api/debug/watch", async (req, res) => {
-  if ((req.body || {}).token !== "horus-selftest") return res.status(403).json({ ok: false });
-  const sent = [];
-  const rec = {
-    sendText: async (cid, text, extra) => { sent.push({ t: "text", text, kb: !!extra?.reply_markup }); return { ok: true, result: { message_id: 1 } }; },
-    sendPhoto: async (cid, png, cap) => { sent.push({ t: "card", card: String(png).split(/[/\\]/).pop(), cap }); return { ok: true, result: { message_id: 1 } }; },
-    call: async () => ({ ok: true }),
-  };
-  try {
-    await runSession(rec, `dbg-${Date.now()}`, Number(req.body.fid), 1e9);
-    res.json({ ok: true, sent });
-  } catch (e) { res.json({ ok: false, error: e.message, stack: (e.stack || "").split("\n").slice(0, 6), sent }); }
-});
-
 server.listen(PORT, () => {
   console.log(`ProofDesk listening on :${PORT}`);
   // Both worlds boot together: real TxLINE feed + the demo championship.
