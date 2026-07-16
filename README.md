@@ -1,4 +1,6 @@
-# 𓂀 HORUS — the eye on every match
+<p align="center"><img src="public/logo.png" alt="HORUS" width="200" /></p>
+
+# HORUS — the eye on every match
 
 **A Telegram pundit for the 2026 World Cup.** HORUS turns TxLINE's real-time
 match data into instant visual cards — goals, cards and market swings, with the
