@@ -151,15 +151,6 @@ export function buildEventJob(ev, ctx) {
       statVal: `${(state?.yellow || [0, 0])[0]} - ${(state?.yellow || [0, 0])[1]}`,
       statColor: "yellow",
     };
-    case "foul": return {
-      ...common, kind: "mini", badge: texts.foul || "FOUL", badgeColor: "muted", badgeFg: "fg",
-      title: ev.title || (texts.foul || "Foul"),
-      subtitle: ev.subtitle || "",
-      player: ev.player,
-      statLabel: texts.fouls || "Fouls",
-      statVal: ev.foulCount ? `${ev.foulCount[0]} - ${ev.foulCount[1]}` : "",
-      statColor: "muted_fg",
-    };
     case "corner": return {
       ...common, kind: "mini", badge: texts.corner || "CORNER", badgeColor: "gold_deep",
       title: ev.title || (texts.corner || "Corner"),
@@ -195,7 +186,7 @@ export function buildEventJob(ev, ctx) {
       quote: ev.quote,
     };
     case "fulltime": return {
-      ...common, kind: "fulltime", badge: texts.fulltime || "FULL-TIME", badgeColor: "fg", live: false,
+      ...common, minute: null, kind: "fulltime", badge: texts.fulltime || "FULL-TIME", badgeColor: "fg", live: false,
       stats: [
         [texts.corners || "Corners", `${(state?.corners || [0, 0])[0]} - ${(state?.corners || [0, 0])[1]}`, "fg"],
         [texts.cards || "Cards", `${(state?.yellow || [0, 0])[0] + (state?.red || [0, 0])[0]} - ${(state?.yellow || [0, 0])[1] + (state?.red || [0, 0])[1]}`, "fg"],

@@ -448,11 +448,22 @@ async function runSession(bot, chatId, fid, speed = 5) {
   const sess = { stop: false, speed };
   playbacks.set(String(chatId), sess);
   const meta = metaOf(fid) || { home: "Home", away: "Away" };
-  await sendT(bot, chatId, `<b>${meta.home} vs ${meta.away} — kick-off.</b>\nYour own match, at your own pace.`,
-    { reply_markup: sessionControls(speed) });
-  // the fan's match starts at 0-0, minute 0 — like every match should
+  // the fan's match starts at 0-0 — unless the feed's coverage of this match
+  // only begins mid-game: then we seed that baseline silently and say so
   const st = blankMatchState();
-  let probs = null, prevProbs = null, odds = null, prevTs = null;
+  const firstStats = tl.msgs.slice(tl.cursor).find((x) => x.stream === "scores" && x.msg.Stats && Object.keys(x.msg.Stats).length)?.msg;
+  let intro = `<b>${meta.home} vs ${meta.away} — kick-off.</b>\nYour own match, at your own pace.`;
+  if (firstStats) {
+    const d = decodeTxStats(firstStats.Stats);
+    if (d.score[0] + d.score[1] > 0 || (firstStats.Clock?.Seconds ?? 0) > 300) {
+      Object.assign(st, d);
+      st.minute = Math.floor((firstStats.Clock?.Seconds ?? 0) / 60);
+      st.statusId = firstStats.StatusId ?? st.statusId;
+      intro = `<b>${meta.home} ${st.score[0]}-${st.score[1]} ${meta.away}</b>\nCoverage joins at ${st.minute}'. Your own match, at your own pace.`;
+    }
+  }
+  await sendT(bot, chatId, intro, { reply_markup: sessionControls(speed) });
+  let probs = null, prevProbs = null, odds = null, lastOddsTs = null, prevTs = null;
   for (let i = tl.cursor; i < tl.msgs.length; i++) {
     const { ts, stream, msg } = tl.msgs[i];
     if (prevTs != null) {
@@ -461,11 +472,14 @@ async function runSession(bot, chatId, fid, speed = 5) {
     }
     prevTs = ts;
     if (sess.stop) return;
+    // spurious mid-stream game_finalised messages are noise, not full time
+    if (stream === "scores" && msg.StatusId === 100 && i < tl.finalIdx) continue;
     if (stream === "odds") {
       // the fan's market state: full-time 1X2, price AND demargined percents,
       // exactly as TxLINE streams them tick by tick
       if (msg.SuperOddsType === "1X2_PARTICIPANT_RESULT" && !msg.MarketPeriod && Array.isArray(msg.Prices) && msg.Prices.length === 3) {
         odds = { home: +(msg.Prices[0] / 1000).toFixed(2), draw: +(msg.Prices[1] / 1000).toFixed(2), away: +(msg.Prices[2] / 1000).toFixed(2) };
+        lastOddsTs = ts;
         if (Array.isArray(msg.Pct) && msg.Pct.length === 3) {
           const p = msg.Pct.map(Number), s = p[0] + p[1] + p[2];
           if (s > 0) { prevProbs = probs; probs = { home: p[0] / s, draw: p[1] / s, away: p[2] / s }; }
@@ -474,7 +488,13 @@ async function runSession(bot, chatId, fid, speed = 5) {
       continue;
     }
     const prev = { score: [...st.score], red: [...st.red], statusId: st.statusId };
-    if (msg.Clock?.Seconds != null) st.minute = Math.floor(msg.Clock.Seconds / 60);
+    // displayed minute never goes backwards inside a period (the feed freezes
+    // or adjusts the clock around breaks); a new period sets a new baseline
+    if (msg.Clock?.Seconds != null) {
+      const m = Math.floor(msg.Clock.Seconds / 60);
+      if (msg.StatusId != null && msg.StatusId !== st.statusId) st.minute = m;
+      else st.minute = Math.max(st.minute ?? 0, m);
+    }
     if (msg.StatusId != null) st.statusId = msg.StatusId;
     if (msg.Seq) st.seq = msg.Seq;
     if (msg.Stats) {
@@ -484,6 +504,10 @@ async function runSession(bot, chatId, fid, speed = 5) {
     const evs = [];
     if (st.score[0] > prev.score[0]) evs.push({ kind: "goal", isHome: true });
     if (st.score[1] > prev.score[1]) evs.push({ kind: "goal", isHome: false });
+    // VAR: a score that goes DOWN means a goal was overturned — the fan must
+    // see the correction, never keep a false score
+    if (st.score[0] < prev.score[0]) evs.push({ kind: "var", isHome: true });
+    if (st.score[1] < prev.score[1]) evs.push({ kind: "var", isHome: false });
     if (st.red[0] > prev.red[0]) evs.push({ kind: "red", isHome: true });
     if (st.red[1] > prev.red[1]) evs.push({ kind: "red", isHome: false });
     if (st.yellow[0] > prev.yellow[0]) evs.push({ kind: "yellow", isHome: true });
@@ -491,8 +515,13 @@ async function runSession(bot, chatId, fid, speed = 5) {
     if (st.corners[0] > prev.corners[0]) evs.push({ kind: "corner", isHome: true });
     if (st.corners[1] > prev.corners[1]) evs.push({ kind: "corner", isHome: false });
     if (st.statusId !== prev.statusId && PHASES[st.statusId]) evs.push({ kind: "period", text: PHASES[st.statusId] });
+    // stale-market guard: suspended markets must not decorate events with
+    // old numbers — beyond 3 minutes the odds/probabilities are withheld
+    const fresh = lastOddsTs != null && ts - lastOddsTs <= 180000;
     for (const ev of evs) {
-      await horus.personalEvent(chatId, Number(fid), meta, ev, { st, probs, prevProbs, odds }).catch((e) => console.log("[session]", e.message));
+      await horus.personalEvent(chatId, Number(fid), meta, ev, {
+        st, probs: fresh ? probs : null, prevProbs: fresh ? prevProbs : null, odds: fresh ? odds : null,
+      }).catch((e) => console.log("[session]", e.message));
       if (sess.stop) return;
     }
     if (isFinalStatus(st.statusId)) break;

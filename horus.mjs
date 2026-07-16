@@ -493,10 +493,11 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     let head = "";
     if (ev.kind === "goal") head = `⚽ ${term("goal", lang)} — ${team}! ${meta.home} ${score} ${meta.away} (${min})`;
     else if (ev.kind === "red") head = `🟥 ${term("red_cards", lang).toUpperCase()} — ${team} (${min}), ${score}`;
+    else if (ev.kind === "var") head = `📺 VAR — ${await translate(`${team} goal overturned`, lang)}. ${meta.home} ${score} ${meta.away} (${min})`;
     else if (ev.kind === "period") head = `⏱ ${await translate(ev.text, lang)} — ${meta.home} ${score} ${meta.away}`;
     if (!head) return;
     await bot.sendText(chatId, head);
-    let kind = ev.kind === "goal" ? "goal" : ev.kind === "red" ? "red" : null;
+    let kind = ev.kind === "goal" ? "goal" : ev.kind === "red" ? "red" : ev.kind === "var" ? "var" : null;
     if (ev.kind === "period" && /full time|finished/i.test(ev.text || "")) kind = "fulltime";
     else if (ev.kind === "period" && /1st half/i.test(ev.text || "")) kind = "kickoff";
     else if (ev.kind === "period") kind = "phase";
@@ -507,6 +508,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       if (p) evx.player = p;
     }
     if (kind === "phase") evx.text = await translate(ev.text, lang);
+    if (kind === "var") { evx.title = await translate("DECISION OVERTURNED", lang); evx.ruling = "NO GOAL"; }
     const texts = {};
     for (const k of ["goal", "red_card", "corner", "win_probability", "fulltime", "kickoff", "corners", "cards"])
       texts[k] = (await tKey(k, lang)).toUpperCase();

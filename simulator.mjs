@@ -20,7 +20,7 @@
 //
 // CLI:  node simulator.mjs fetch   — download & cache the demo data (run on
 //                                    the VPS where TxLINE credentials live).
-import { readFileSync, existsSync, writeFileSync, mkdirSync } from "fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync, statSync } from "fs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { TxLive } from "./txline-live.mjs";
@@ -38,10 +38,11 @@ export const DEMO_MATCHES = [
   // us at ~60' just before the 67'/79'/83'/90' goal sequence of the comeback.
   { id: 18202701, home: "Argentina", away: "Egypt",       phase: "live", offsetMin: 15 }, // hero: 0-2 → 3-2
   { id: 18192996, home: "Mexico",    away: "England",     phase: "live", offsetMin: 30 }, // 5 goals, red card, 3 VAR
-  // Brazil-Norway coverage starts at half-time (like the hero) — offset is
-  // relative to coverage start, 5 ≈ the 50th minute of the match
-  { id: 18187298, home: "Brazil",    away: "Norway",      phase: "live", offsetMin: 5 }, // Haaland double 79/90, pen missed
-  { id: 18179550, home: "Belgium",   away: "Senegal",     phase: "live", offsetMin: 15 }, // 0-2 → 3-2 in extra time
+  // (Brazil-Norway was dropped: its stream carries a broken early fragment —
+  // phantom goal + spurious game_finalised. Replaced by Paraguay-France.)
+  { id: 18188721, home: "Paraguay",  away: "France",      phase: "live", offsetMin: 55 }, // Mbappé winner 70'
+  // (Belgium-Senegal dropped July 15: the API stopped serving its history.)
+  { id: 18179551, home: "Spain",     away: "Austria",     phase: "live", offsetMin: 25 }, // Oyarzabal double, 3-0
   { id: 18213979, home: "Norway",    away: "England",     phase: "live", offsetMin: 40 }, // Bellingham double, extra time
   // ---- UPCOMING at T0 ----
   { id: 18237038, home: "France",    away: "Spain",       phase: "upcoming", startsInMin: 10 },
@@ -55,6 +56,10 @@ export const DEMO_MATCHES = [
   { id: 18179763, home: "Portugal",  away: "Croatia",     phase: "finished" }, // 2-1, Ronaldo + 90' Ramos
   { id: 18175918, home: "Argentina", away: "Cape Verde",  phase: "finished" }, // 111' own goal in ET
 ];
+
+// Reserve fixtures with verified API history — cached as insurance because
+// the hackathon feed is already dropping fixtures ahead of the July 19 cut.
+export const RESERVE_IDS = [18179549, 18179552, 18185036, 18175918, 18176123, 18202783];
 
 const scoresFile = (id) => join(SIM_DIR, `${id}-scores.jsonl`);
 const oddsFile = (id) => join(SIM_DIR, `${id}-odds.json`);
@@ -117,9 +122,15 @@ export class TxSim extends TxLive {
   }
 
   // Personal playback source: the whole match from its own kick-off.
+  // finalIdx guards against spurious mid-stream game_finalised messages:
+  // only the LAST one truly ends the match.
   timelineOf(fixtureId) {
     const m = this.matches.get(Number(fixtureId));
-    return m ? { msgs: m.msgs, cursor: m.kickIdx, zero: m.zero } : null;
+    if (!m) return null;
+    if (m.finalIdx === undefined) {
+      m.finalIdx = m.msgs.findLastIndex((x) => x.stream === "scores" && x.msg.StatusId === 100);
+    }
+    return { msgs: m.msgs, cursor: m.kickIdx, zero: m.zero, finalIdx: m.finalIdx };
   }
 
   // Emit every message whose relative time <= horizon. During catchup the
@@ -189,24 +200,31 @@ async function fetchDemoData() {
   const jwt = (await jwtRes.json()).token;
   const headers = { Authorization: `Bearer ${jwt}`, "X-Api-Token": creds.apiToken };
 
-  for (const { id, home, away } of DEMO_MATCHES) {
+  // The hackathon feed dies July 19 and already returns empty for some
+  // fixtures — NEVER overwrite a good local cache with a worse response.
+  const sizeOf = (f) => { try { return statSync(f).size; } catch { return 0; } };
+  const targets = [...DEMO_MATCHES, ...RESERVE_IDS.map((id) => ({ id, home: `reserve`, away: id }))];
+  for (const { id, home, away } of targets) {
     // scores/historical returns SSE-format text: "data: {...}" lines
     const sr = await fetch(`${creds.api}/api/scores/historical/${id}`, { headers });
-    if (!sr.ok) { console.log(`[fetch] ${id} scores → ${sr.status}`); continue; }
+    if (!sr.ok) { console.log(`[fetch] ${id} scores → ${sr.status} (cache kept)`); continue; }
     const lines = (await sr.text()).split("\n")
       .filter((l) => l.startsWith("data:"))
       .map((l) => l.slice(5).trim())
       .filter(Boolean);
-    writeFileSync(scoresFile(id), lines.join("\n") + "\n");
+    const payload = lines.join("\n") + "\n";
+    if (payload.length >= sizeOf(scoresFile(id))) writeFileSync(scoresFile(id), payload);
+    else console.log(`[fetch] ${id} scores response smaller than cache — kept cache`);
 
     const or = await fetch(`${creds.api}/api/odds/updates/${id}`, { headers });
     if (or.ok) {
       const body = await or.json();
       const arr = Array.isArray(body) ? body : body.updates || body.data || [];
-      writeFileSync(oddsFile(id), JSON.stringify(arr));
+      const oddsPayload = JSON.stringify(arr);
+      if (oddsPayload.length >= sizeOf(oddsFile(id))) writeFileSync(oddsFile(id), oddsPayload);
       console.log(`[fetch] ${id} ${home}-${away}: ${lines.length} score msgs, ${arr.length} odds ticks`);
     } else {
-      console.log(`[fetch] ${id} ${home}-${away}: ${lines.length} score msgs, odds → ${or.status}`);
+      console.log(`[fetch] ${id} ${home}-${away}: ${lines.length} score msgs, odds → ${or.status} (cache kept)`);
     }
   }
   console.log("[fetch] done →", SIM_DIR);
