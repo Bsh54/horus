@@ -82,7 +82,7 @@ export function createBot({ onCommand }) {
             if (u.callback_query) call("answerCallbackQuery", { callback_query_id: u.callback_query.id });
             try {
               await onCommand({ chatId, text: text.trim(), from, bot: api, msgId: msg.message_id, isCallback: !!u.callback_query });
-            } catch (e) { console.log("[bot] handler error:", e.message); }
+            } catch (e) { console.log(`[bot] handler error on "${text.slice(0, 60)}":`, e.stack?.split("\n").slice(0, 4).join(" | ") || e.message); }
           }
         }
       } catch { await new Promise((res) => setTimeout(res, 3000)); }

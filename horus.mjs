@@ -459,9 +459,9 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       const evx = { ...ev };
       if (ev.kind === "yellow") {
         const p = playerFromPbp(fixtureId, "yellow", null, st.minute);
-        evx.title = p?.name || `${term("yellow_cards", lang)} — ${team}`;
-        evx.subtitle = p?.name ? `${term("yellow_cards", lang)} — ${team}` : "";
-        texts.yellow_card = term("yellow_cards", lang).toUpperCase();
+        evx.title = p?.name || `${term("yellow_card", lang)} — ${team}`;
+        evx.subtitle = p?.name ? `${term("yellow_card", lang)} — ${team}` : "";
+        texts.yellow_card = term("yellow_card", lang).toUpperCase();
         texts.cards = term("yellow_cards", lang);
       } else if (ev.kind === "corner") {
         const n = (st.corners || [0, 0])[ev.isHome ? 0 : 1];
@@ -492,7 +492,7 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     }
     let head = "";
     if (ev.kind === "goal") head = `⚽ ${term("goal", lang)} — ${team}! ${meta.home} ${score} ${meta.away} (${min})`;
-    else if (ev.kind === "red") head = `🟥 ${term("red_cards", lang).toUpperCase()} — ${team} (${min}), ${score}`;
+    else if (ev.kind === "red") head = `🟥 ${term("red_card", lang).toUpperCase()} — ${team} (${min}), ${score}`;
     else if (ev.kind === "var") head = `📺 VAR — ${await translate(`${team} goal overturned`, lang)}. ${meta.home} ${score} ${meta.away} (${min})`;
     else if (ev.kind === "period") head = `⏱ ${await translate(ev.text, lang)} — ${meta.home} ${score} ${meta.away}`;
     if (!head) return;

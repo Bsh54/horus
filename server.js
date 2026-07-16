@@ -479,7 +479,7 @@ async function runSession(bot, chatId, fid, speed = 5) {
       }
       continue;
     }
-    const prev = { score: [...st.score], red: [...st.red], statusId: st.statusId };
+    const prev = { score: [...st.score], red: [...st.red], yellow: [...st.yellow], corners: [...st.corners], statusId: st.statusId };
     // displayed minute never goes backwards inside a period (the feed freezes
     // or adjusts the clock around breaks); a new period sets a new baseline
     if (msg.Clock?.Seconds != null) {
@@ -785,7 +785,9 @@ async function botCommand({ chatId, text, from, bot, msgId, isCallback }) {
       }
       if (text.startsWith("watch:")) { // pace chosen — the fan's match kicks off
         const [, fid, sp] = text.split(":");
-        await runSession(bot, chatId, Number(fid), Number(sp) || 1);
+        // detached: a playback lasts a whole match; awaiting it would freeze
+        // the single-threaded bot poller for every other user
+        runSession(bot, chatId, Number(fid), Number(sp) || 1).catch((e) => console.log("[session] fatal:", e.stack || e.message));
         break;
       }
       if (text.startsWith("spd:")) { // personal playback controls
@@ -1411,6 +1413,32 @@ function broadcast(msg) {
 }
 wss.on("connection", (ws) => {
   ws.send(JSON.stringify({ kind: "hello", journal: journalRead(50) }));
+});
+
+// Debug driver: run the REAL botCommand with a recording bot, no Telegram.
+// POST { chatId, text, isCallback } — returns everything the bot would send
+// or the uncaught error + stack. Used by test-live-flow.mjs to reproduce
+// the live journey end to end. Harmless: it only records.
+app.post("/api/debug/cmd", async (req, res) => {
+  if ((req.body || {}).token !== "horus-selftest") return res.status(403).json({ ok: false });
+  const sent = [];
+  const rec = {
+    subs: new Map(),
+    sendText: async (cid, text, extra) => { sent.push({ t: "text", text, kb: extra?.reply_markup?.inline_keyboard }); return { ok: true, result: { message_id: Date.now() } }; },
+    sendPhoto: async (cid, png, cap) => { sent.push({ t: "photo", png: String(png).split(/[/\\]/).pop(), cap }); return { ok: true, result: { message_id: Date.now() } }; },
+    editText: async (cid, mid, text, extra) => { sent.push({ t: "edit", text, kb: extra?.reply_markup?.inline_keyboard }); return { ok: true }; },
+    call: async () => ({ ok: true }),
+    subscribe: (cid, target, name) => { const s = rec.subs.get(String(cid)) || { follows: [], name }; if (target === "all") s.follows = ["all"]; else if (!s.follows.includes(target)) s.follows.push(target); rec.subs.set(String(cid), s); },
+    unsubscribe: (cid) => rec.subs.delete(String(cid)),
+    followersOf: () => [],
+  };
+  const { chatId = "debug", text, isCallback = false } = req.body || {};
+  try {
+    await botCommand({ chatId: String(chatId), text, from: { first_name: "Debug", id: chatId }, bot: rec, msgId: 1, isCallback });
+    res.json({ ok: true, sent });
+  } catch (e) {
+    res.json({ ok: false, error: e.message, stack: (e.stack || "").split("\n").slice(0, 6) });
+  }
 });
 
 server.listen(PORT, () => {
