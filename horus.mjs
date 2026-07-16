@@ -456,11 +456,11 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     try {
       const texts = {};
       for (const k of ["yellow_card", "corner", "cards", "corners"]) texts[k] = (await tKey(k, lang)).toUpperCase();
-      const evx = { ...ev };
+      const evx = { ...ev, player: undefined };
       if (ev.kind === "yellow") {
-        const p = playerFromPbp(fixtureId, "yellow", null, st.minute);
-        evx.title = p?.name || `${term("yellow_card", lang)} — ${team}`;
-        evx.subtitle = p?.name ? `${term("yellow_card", lang)} — ${team}` : "";
+        const name = typeof ev.player === "string" ? ev.player : playerFromPbp(fixtureId, "yellow", null, st.minute)?.name;
+        evx.title = name || `${term("yellow_card", lang)} — ${team}`;
+        evx.subtitle = name ? `${term("yellow_card", lang)} — ${team}` : "";
         texts.yellow_card = term("yellow_card", lang).toUpperCase();
         texts.cards = term("yellow_cards", lang);
       } else if (ev.kind === "corner") {
@@ -477,6 +477,58 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
       const png = await renderCard(`m-${fixtureId}-${ev.kind}-${st.minute ?? "x"}-${(st.corners || []).join("")}-${(st.yellow || []).join("")}-${lang}`, job);
       await B.sendPhoto(chatId, png);
     } catch (e) { console.log("[cards] mini render failed:", e.message); }
+  }
+
+  // Full-match event timeline from the play-by-play — EVERY match, from the
+  // 0th minute, so a viewer always lives the whole game. Goals/cards/corners/
+  // periods with running score and cumulative counts. (Market comes from the
+  // authentic TxLINE odds series, matched by minute, in runSession.)
+  function matchEvents(fixtureId, meta) {
+    const pbp = loadPbp(fixtureId);
+    if (!pbp?.plays) return [];
+    const nH = String(meta.home).toLowerCase().trim(), nA = String(meta.away).toLowerCase().trim();
+    const key = (s) => String(s || "").toLowerCase().trim().split(/\s+/)[0]; // first word, never ""
+    const hK = key(nH), aK = key(nA);
+    const sideOf = (n) => {
+      const t = String(n || "").toLowerCase().trim();
+      if (!t) return -1;
+      const tK = key(t);
+      const homeHit = (hK && t.includes(hK)) || (tK && nH.includes(tK));
+      const awayHit = (aK && t.includes(aK)) || (tK && nA.includes(tK));
+      if (homeHit && !awayHit) return 0;
+      if (awayHit && !homeHit) return 1;
+      return -1; // ambiguous or none — don't guess
+    };
+    const scorer = (t) => String(t).match(/\.\s+([\p{Lu}][\p{L}'’.-]+(?: [\p{Lu}][\p{L}'’.-]+){0,3}) \(/u)?.[1]
+      || String(t).match(/by ([\p{Lu}][\p{L}'’.-]+(?: [\p{Lu}][\p{L}'’.-]+){0,3}),/u)?.[1] || null;
+    const booked = (t) => String(t).match(/^([\p{Lu}][\p{L}'’.-]+(?: [\p{Lu}][\p{L}'’.-]+){0,3}) \(/u)?.[1] || null;
+    const GOALS = new Set(["Goal", "Goal - Header", "Penalty - Scored", "Own Goal"]);
+    const evs = [];
+    let score = [0, 0], yellow = [0, 0], red = [0, 0], corners = [0, 0];
+    for (const p of pbp.plays) {
+      const min = p.min ?? 0, ty = p.type || "", text = p.text || "";
+      if (GOALS.has(ty)) {
+        // last two "<name> <number>" pairs in the sentence = the score line
+        const pairs = [...text.matchAll(/([A-Za-zÀ-ÿ'’.\- ]+?)\s+(\d+)(?:\s*\(\d+\))?(?=[,.])/g)].slice(-2);
+        if (pairs.length === 2) {
+          const ns = [...score];
+          for (const m of pairs) { const s = sideOf(m[1]); if (s >= 0) ns[s] = Number(m[2]); }
+          const inc = ns[0] > score[0] ? 0 : ns[1] > score[1] ? 1 : -1;
+          score = ns;
+          if (inc >= 0) evs.push({ min, kind: "goal", isHome: inc === 0, score: [...score], player: scorer(text), own: ty === "Own Goal", pen: ty === "Penalty - Scored" });
+        }
+      } else if (/Red Card|Second Yellow/i.test(ty)) {
+        const s = sideOf(text.match(/\(([^)]+)\)/)?.[1]); if (s >= 0) { red[s]++; evs.push({ min, kind: "red", isHome: s === 0, player: booked(text) }); }
+      } else if (ty === "Yellow Card") {
+        const s = sideOf(text.match(/\(([^)]+)\)/)?.[1]); if (s >= 0) { yellow[s]++; evs.push({ min, kind: "yellow", isHome: s === 0, yellow: [...yellow], player: booked(text) }); }
+      } else if (ty === "Corner Awarded") {
+        const s = sideOf(text.match(/Corner,\s*([^.]+?)\./)?.[1]); if (s >= 0) { corners[s]++; evs.push({ min, kind: "corner", isHome: s === 0, corners: [...corners] }); }
+      } else if (ty === "Halftime") evs.push({ min, kind: "period", text: "Halftime" });
+      else if (ty === "Start 2nd Half") evs.push({ min, kind: "period", text: "2nd half" });
+      else if (ty === "Start Extra Time") evs.push({ min, kind: "period", text: "Extra time" });
+      else if (ty === "End Regular Time" || ty === "End Extra Time") evs.push({ min, kind: "period", text: "Full time" });
+    }
+    return evs;
   }
 
   // The opening card of a personal session: a KICK-OFF duel when the fan
@@ -525,8 +577,12 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     if (!kind) return;
     const evx = { ...ev, kind };
     if (kind === "goal" || kind === "red") {
-      const p = playerFromPbp(fixtureId, kind, st.score);
-      if (p) evx.player = p;
+      // exact scorer/sent-off name from the event, else resolve from pbp
+      const name = typeof ev.player === "string" ? ev.player : null;
+      const p = name
+        ? { name, photo: playerPhoto(name), halo: kind === "goal", desat: kind === "red" ? 0.4 : 0 }
+        : playerFromPbp(fixtureId, kind, st.score);
+      evx.player = p || undefined;
     }
     if (kind === "phase") evx.text = await translate(ev.text, lang);
     if (kind === "var") { evx.title = await translate("DECISION OVERTURNED", lang); evx.ruling = "NO GOAL"; }
@@ -749,6 +805,6 @@ export function createHorus({ bot, journal, getMeta, getProbs, getState }) {
     return null;
   }
 
-  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, openingCard, announceUpcoming, preMatchOdds, finalResultOf, ask,
+  return { notifyFollowers, rememberProbs, relive, recap, personalEvent, openingCard, matchEvents, announceUpcoming, preMatchOdds, finalResultOf, ask,
     stopReplay: (chatId) => { const r = reliveRuns.get(String(chatId)); if (r) r.stop = true; } };
 }

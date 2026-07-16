@@ -351,8 +351,8 @@ function rowLabel(id, phase) {
   const meta = metaOf(id) || { home: "Home", away: "Away" };
   const st = scoreStates.get(Number(id));
   if (phase === "live") {
-    const sc = st?.score ? `${st.score[0]}-${st.score[1]}` : "vs";
-    return `🔴 ${meta.home} ${sc} ${meta.away} · ${st?.minute ?? "?"}'`;
+    // no score/minute spoiler: everyone kicks this match off from 0'
+    return `🔴 ${meta.home} – ${meta.away}`;
   }
   if (phase === "upcoming") {
     const when = meta.startTime ? new Date(meta.startTime).toISOString().slice(11, 16) + " UTC" : "";
@@ -435,110 +435,64 @@ function sessionControls(speed) {
 
 async function runSession(bot, chatId, fid, speed = 5) {
   stopSession(chatId);
-  const tl = sim ? sim.timelineOf(Number(fid)) : null;
-  if (!tl) { await sendT(bot, chatId, "No playback data for this match."); return; }
+  const meta = metaOf(fid) || { home: "Home", away: "Away" };
+  // EVERY match is lived from the 0th minute: events come from the complete
+  // play-by-play; the market (odds + demargined probabilities) is the
+  // authentic TxLINE series, matched to each event's minute.
+  const events = horus.matchEvents(Number(fid), meta);
+  if (!events.length) { await sendT(bot, chatId, "No playback data for this match."); return; }
+  const oddsSeries = sim ? sim.oddsByMinute(Number(fid)) : [];
+  const marketAt = (min) => {
+    let hit = null;
+    for (const o of oddsSeries) { if (o.min <= min) hit = o; else break; }
+    return hit || (oddsSeries[0] || null);
+  };
   const sess = { stop: false, speed };
   playbacks.set(String(chatId), sess);
-  const meta = metaOf(fid) || { home: "Home", away: "Away" };
-  // the fan's match starts at 0-0 — unless the feed's coverage of this match
-  // only begins well into the game: then seed that baseline silently
-  const st = blankMatchState();
-  const firstStats = tl.msgs.slice(tl.cursor).find((x) => x.stream === "scores" && x.msg.Stats && Object.keys(x.msg.Stats).length)?.msg;
-  let seeded = false;
-  if (firstStats) {
-    const d = decodeTxStats(firstStats.Stats);
-    const joinMin = Math.floor((firstStats.Clock?.Seconds ?? 0) / 60);
-    if (d.score[0] + d.score[1] > 0 || joinMin > 10) {
-      Object.assign(st, d);
-      st.minute = joinMin;
-      st.statusId = firstStats.StatusId ?? st.statusId;
-      seeded = true;
-    }
-  }
-  // one opening card (kick-off duel, or coverage-joins score) carrying a Stop
+
+  // opening: a kick-off duel card (from the whistle) carrying a Stop button
   await horus.openingCard(chatId, Number(fid), meta, {
-    minute: st.minute, score: st.score, seeded, odds: sim.oddsFor(Number(fid)), bot,
+    minute: 0, score: [0, 0], seeded: false, odds: sim.oddsFor(Number(fid)), bot,
     keyboard: { inline_keyboard: [[{ text: "⏹ Stop", callback_data: "spd:stop" }]] },
   });
-  // corner anti-spam: a card only during a pressure spell (3+ in 10 min),
-  // debounced 8 min per side — never one card per corner
+
+  const st = blankMatchState();
   const cornerLog = [[], []], lastCornerCard = [-99, -99];
-  let baseline = !seeded; // absorb the first stats snapshot silently (no 0' events)
-  let probs = null, prevProbs = null, odds = null, lastOddsTs = null, prevTs = null;
-  for (let i = tl.cursor; i < tl.msgs.length; i++) {
-    const { ts, stream, msg } = tl.msgs[i];
-    if (prevTs != null) {
-      const wait = Math.min(20000, Math.max(0, (ts - prevTs) / sess.speed));
-      if (wait > 30) await new Promise((r) => setTimeout(r, wait));
+  let prevMin = 0, prevProbs = null;
+  for (const ev of events) {
+    // pace by match-minute; quiet spells compress, never drag past ~8s
+    const gap = Math.max(0, (ev.min ?? prevMin) - prevMin);
+    if (gap > 0) {
+      const wait = Math.min(8000, Math.max(300, gap * 1600 / sess.speed));
+      await new Promise((r) => setTimeout(r, wait));
     }
-    prevTs = ts;
+    prevMin = ev.min ?? prevMin;
     if (sess.stop) return;
-    // spurious mid-stream game_finalised messages are noise, not full time
-    if (stream === "scores" && msg.StatusId === 100 && i < tl.finalIdx) continue;
-    if (stream === "odds") {
-      // the fan's market state: full-time 1X2, price AND demargined percents,
-      // exactly as TxLINE streams them tick by tick
-      if (msg.SuperOddsType === "1X2_PARTICIPANT_RESULT" && !msg.MarketPeriod && Array.isArray(msg.Prices) && msg.Prices.length === 3) {
-        odds = { home: +(msg.Prices[0] / 1000).toFixed(2), draw: +(msg.Prices[1] / 1000).toFixed(2), away: +(msg.Prices[2] / 1000).toFixed(2) };
-        lastOddsTs = ts;
-        if (Array.isArray(msg.Pct) && msg.Pct.length === 3) {
-          const p = msg.Pct.map(Number), s = p[0] + p[1] + p[2];
-          if (s > 0) { prevProbs = probs; probs = { home: p[0] / s, draw: p[1] / s, away: p[2] / s }; }
-        }
-      }
-      continue;
-    }
-    const prev = { score: [...st.score], red: [...st.red], yellow: [...st.yellow], corners: [...st.corners], statusId: st.statusId };
-    // displayed minute never goes backwards inside a period (the feed freezes
-    // or adjusts the clock around breaks); a new period sets a new baseline
-    if (msg.Clock?.Seconds != null) {
-      const m = Math.floor(msg.Clock.Seconds / 60);
-      if (msg.StatusId != null && msg.StatusId !== st.statusId) st.minute = m;
-      else st.minute = Math.max(st.minute ?? 0, m);
-    }
-    if (msg.StatusId != null) st.statusId = msg.StatusId;
-    if (msg.Seq) st.seq = msg.Seq;
-    if (msg.Stats) {
-      const d = decodeTxStats(msg.Stats);
-      st.score = d.score; st.yellow = d.yellow; st.red = d.red; st.corners = d.corners;
-      // absorb the opening snapshots as the starting line until the clock is
-      // actually running — avoids phantom "0'" cards from catch-up messages
-      if (baseline) { if ((st.minute ?? 0) >= 1) baseline = false; else continue; }
-    }
-    const evs = [];
-    if (st.score[0] > prev.score[0]) evs.push({ kind: "goal", isHome: true });
-    if (st.score[1] > prev.score[1]) evs.push({ kind: "goal", isHome: false });
-    // VAR: a score that goes DOWN means a goal was overturned — the fan must
-    // see the correction, never keep a false score
-    if (st.score[0] < prev.score[0]) evs.push({ kind: "var", isHome: true });
-    if (st.score[1] < prev.score[1]) evs.push({ kind: "var", isHome: false });
-    if (st.red[0] > prev.red[0]) evs.push({ kind: "red", isHome: true });
-    if (st.red[1] > prev.red[1]) evs.push({ kind: "red", isHome: false });
-    if (st.yellow[0] > prev.yellow[0]) evs.push({ kind: "yellow", isHome: true });
-    if (st.yellow[1] > prev.yellow[1]) evs.push({ kind: "yellow", isHome: false });
-    // corners: gate on pressure spell, not one card per corner
-    for (const side of [0, 1]) {
-      if (st.corners[side] <= prev.corners[side]) continue;
+
+    // roll match state forward to this event
+    st.minute = ev.min ?? st.minute;
+    if (ev.kind === "goal") st.score = [...ev.score];
+    if (ev.kind === "yellow") st.yellow = [...ev.yellow];
+    if (ev.kind === "corner") st.corners = [...ev.corners];
+    if (ev.kind === "red") st.red[ev.isHome ? 0 : 1]++;
+
+    // corner anti-spam: a card only during a pressure spell (3+ in 10 min)
+    if (ev.kind === "corner") {
+      const side = ev.isHome ? 0 : 1;
       cornerLog[side].push(st.minute);
       const recent = cornerLog[side].filter((m) => st.minute - m <= 10).length;
-      if (recent >= 3 && st.minute - lastCornerCard[side] >= 8) {
-        evs.push({ kind: "corner", isHome: side === 0 });
-        lastCornerCard[side] = st.minute;
-      }
+      if (recent < 3 || st.minute - lastCornerCard[side] < 8) continue;
+      lastCornerCard[side] = st.minute;
     }
-    // period markers, minus "1st half" — the opening card already IS kick-off
-    if (st.statusId !== prev.statusId && PHASES[st.statusId] && PHASES[st.statusId] !== "1st half")
-      evs.push({ kind: "period", text: PHASES[st.statusId] });
-    // stale-market guard: suspended markets must not decorate events with
-    // old numbers — beyond 3 minutes the odds/probabilities are withheld
-    const fresh = lastOddsTs != null && ts - lastOddsTs <= 180000;
-    for (const ev of evs) {
-      await horus.personalEvent(chatId, Number(fid), meta, ev, {
-        st, probs: fresh ? probs : null, prevProbs: fresh ? prevProbs : null, odds: fresh ? odds : null, bot,
-      }).catch((e) => console.log("[session]", e.message));
-      if (sess.stop) return;
-    }
-    if (isFinalStatus(st.statusId)) break;
+
+    // the authentic market at this minute
+    const mk = marketAt(st.minute);
+    const probs = mk?.probs || null;
+    await horus.personalEvent(chatId, Number(fid), meta, ev, {
+      st, probs, prevProbs, odds: mk?.odds || null, bot,
+    }).catch((e) => console.log("[session]", e.message));
+    prevProbs = probs;
+    if (sess.stop) return;
   }
   playbacks.delete(String(chatId));
   // settle this fan's position at their own final whistle

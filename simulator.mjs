@@ -121,6 +121,28 @@ export class TxSim extends TxLive {
     return m.offsetMs; // live: frozen mid-match
   }
 
+  // Authentic market by match-minute: every in-running 1X2 tick (price +
+  // demargined percents) indexed to minutes since kick-off. Powers the odds
+  // shown on each event card when the match is driven from the play-by-play.
+  oddsByMinute(fixtureId) {
+    const m = this.matches.get(Number(fixtureId));
+    if (!m) return [];
+    const out = [];
+    for (const { ts, stream, msg } of m.msgs) {
+      if (stream !== "odds") continue;
+      if (msg.SuperOddsType !== "1X2_PARTICIPANT_RESULT" || msg.MarketPeriod || !Array.isArray(msg.Prices) || msg.Prices.length !== 3) continue;
+      const min = Math.round((ts - m.zero) / 60000);
+      const odds = { home: +(msg.Prices[0] / 1000).toFixed(2), draw: +(msg.Prices[1] / 1000).toFixed(2), away: +(msg.Prices[2] / 1000).toFixed(2) };
+      let probs = null;
+      if (Array.isArray(msg.Pct) && msg.Pct.length === 3) {
+        const p = msg.Pct.map(Number), s = p[0] + p[1] + p[2];
+        if (s > 0) probs = { home: p[0] / s, draw: p[1] / s, away: p[2] / s };
+      }
+      out.push({ min, odds, probs });
+    }
+    return out;
+  }
+
   // Personal playback source: the whole match from its own kick-off.
   // finalIdx guards against spurious mid-stream game_finalised messages:
   // only the LAST one truly ends the match.
